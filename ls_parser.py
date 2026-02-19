@@ -1,14 +1,17 @@
 import subprocess
 import json
 import re
+import argparse
+import sys
 
-def parse_ls_l():
+def parse_ls_l(directory="."):
     """
-    Runs 'ls -l' and parses the output into a list of dictionaries.
+    Runs 'ls -l' on the specified directory and parses the output 
+    into a list of dictionaries.
     """
     try:
-        # Run ls -l command
-        result = subprocess.run(['ls', '-l'], capture_output=True, text=True, check=True)
+        # Run ls -l command on the specified directory
+        result = subprocess.run(['ls', '-l', directory], capture_output=True, text=True, check=True)
         output = result.stdout.strip()
         
         parsed_files = []
@@ -22,7 +25,8 @@ def parse_ls_l():
         # It handles the variable number of spaces between columns.
         # Columns: perms, links, owner, group, size, month, day, time/year, filename
         # Perms can end with @ (extended attributes) or + (ACLs) on macOS/Linux
-        ls_pattern = re.compile(r'^([drwxst-]{10}[@+]?)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+\s+\S+\s+\S+)\s+(.+)$')
+        # File types: - (regular), d (dir), l (link), b (block), c (char), p (pipe), s (socket)
+        ls_pattern = re.compile(r'^([drwxstlbcps-]{10}[@+]?)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+\s+\S+\s+\S+)\s+(.+)$')
 
         for line in lines:
             # Skip total line (usually the first line)
@@ -49,9 +53,13 @@ def parse_ls_l():
         return parsed_files
 
     except subprocess.CalledProcessError as e:
-        print(f"Error running ls: {e}")
+        print(f"Error running ls: {e}", file=sys.stderr)
         return []
 
 if __name__ == "__main__":
-    files = parse_ls_l()
+    parser = argparse.ArgumentParser(description="Parse 'ls -l' output into JSON.")
+    parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
+    args = parser.parse_args()
+
+    files = parse_ls_l(args.directory)
     print(json.dumps(files, indent=2))

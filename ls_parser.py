@@ -93,11 +93,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
     parser.add_argument("--json", action="store_true", help="Output in JSON format instead of original ls lines")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress all output")
     args = parser.parse_args()
 
     files = parse_ls_l(args.directory)
     groups = group_files_by_time(files)
     
+    if args.quiet:
+        sys.exit(0)
+
     # Print groups separated by blank line
     first = True
     for group in groups:

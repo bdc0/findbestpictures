@@ -45,7 +45,8 @@ def parse_ls_l(directory="."):
                     'date': date_str,
                     'datetime': dt_object.isoformat(), # Store as ISO for JSON
                     'timestamp': dt_object.timestamp(), # Store timestamp for sorting/calc
-                    'name': match.group(7)
+                    'name': match.group(7),
+                    'original_line': line
                 }
                 parsed_files.append(file_info)
             else:
@@ -102,4 +103,5 @@ if __name__ == "__main__":
         if not first:
             print() # Blank line between sets
         first = False
-        print(json.dumps(group, indent=2))
+        for file in group:
+            print(file['original_line'])

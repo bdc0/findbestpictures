@@ -3,15 +3,16 @@ import json
 import re
 import argparse
 import sys
+from datetime import datetime, timedelta
 
 def parse_ls_l(directory="."):
     """
-    Runs 'ls -l' on the specified directory and parses the output 
+    Runs 'ls -lT' on the specified directory and parses the output 
     into a list of dictionaries.
     """
     try:
-        # Run ls -l command on the specified directory
-        result = subprocess.run(['ls', '-l', directory], capture_output=True, text=True, check=True)
+        # Run ls -lT command (macOS specific for full time info)
+        result = subprocess.run(['ls', '-lT', directory], capture_output=True, text=True, check=True)
         output = result.stdout.strip()
         
         parsed_files = []
@@ -19,35 +20,35 @@ def parse_ls_l(directory="."):
         # Split output into lines
         lines = output.split('\n')
         
-        # Regex to parse ls -l output
-        # Example line: -rw-r--r--   1 user  group   123 Feb 19 12:00 filename.txt
-        # Note: This regex assumes a standard BSD/GNU ls format. 
-        # It handles the variable number of spaces between columns.
-        # Columns: perms, links, owner, group, size, month, day, time/year, filename
-        # Perms can end with @ (extended attributes) or + (ACLs) on macOS/Linux
-        # File types: - (regular), d (dir), l (link), b (block), c (char), p (pipe), s (socket)
-        ls_pattern = re.compile(r'^([drwxstlbcps-]{10}[@+]?)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+\s+\S+\s+\S+)\s+(.+)$')
+        # Regex to parse ls -lT output
+        # Columns: perms, links, owner, group, size, Month, Day, H:M:S, Year, filename
+        # Example: -rw-r--r--  1 user  group  123 Feb 19 12:00:00 2026 filename.txt
+        ls_pattern = re.compile(r'^([drwxstlbcps-]{10}[@+]?)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$')
 
         for line in lines:
-            # Skip total line (usually the first line)
+            # Skip total line
             if line.startswith('total'):
                 continue
                 
             match = ls_pattern.match(line)
             if match:
+                date_str = match.group(6)
+                # Parse date: Feb 19 12:00:00 2026
+                dt_object = datetime.strptime(date_str, "%b %d %H:%M:%S %Y")
+                
                 file_info = {
                     'permissions': match.group(1),
                     'links': int(match.group(2)),
                     'owner': match.group(3),
                     'group': match.group(4),
                     'size': int(match.group(5)),
-                    'date': match.group(6),
+                    'date': date_str,
+                    'datetime': dt_object.isoformat(), # Store as ISO for JSON
+                    'timestamp': dt_object.timestamp(), # Store timestamp for sorting/calc
                     'name': match.group(7)
                 }
                 parsed_files.append(file_info)
             else:
-                # Debugging: print lines that didn't match (optional)
-                # print(f"Skipping line: {line}", file=sys.stderr)
                 pass
                 
         return parsed_files
@@ -56,10 +57,49 @@ def parse_ls_l(directory="."):
         print(f"Error running ls: {e}", file=sys.stderr)
         return []
 
+def group_files_by_time(files, delta_seconds=30):
+    """
+    Groups files where each file is created less than 'delta_seconds' 
+    from the previous one.
+    """
+    if not files:
+        return []
+        
+    # Sort by timestamp
+    files.sort(key=lambda x: x['timestamp'])
+    
+    groups = []
+    current_group = [files[0]]
+    
+    for i in range(1, len(files)):
+        prev_file = files[i-1]
+        curr_file = files[i]
+        
+        time_diff = curr_file['timestamp'] - prev_file['timestamp']
+        
+        if time_diff < delta_seconds:
+            current_group.append(curr_file)
+        else:
+            groups.append(current_group)
+            current_group = [curr_file]
+            
+    if current_group:
+        groups.append(current_group)
+        
+    return groups
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parse 'ls -l' output into JSON.")
+    parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
     args = parser.parse_args()
 
     files = parse_ls_l(args.directory)
-    print(json.dumps(files, indent=2))
+    groups = group_files_by_time(files)
+    
+    # Print groups separated by blank line
+    first = True
+    for group in groups:
+        if not first:
+            print() # Blank line between sets
+        first = False
+        print(json.dumps(group, indent=2))

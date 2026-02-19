@@ -92,6 +92,7 @@ def group_files_by_time(files, delta_seconds=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
+    parser.add_argument("--json", action="store_true", help="Output in JSON format instead of original ls lines")
     args = parser.parse_args()
 
     files = parse_ls_l(args.directory)
@@ -103,5 +104,9 @@ if __name__ == "__main__":
         if not first:
             print() # Blank line between sets
         first = False
-        for file in group:
-            print(file['original_line'])
+        
+        if args.json:
+            print(json.dumps(group, indent=2))
+        else:
+            for file in group:
+                print(file['original_line'])

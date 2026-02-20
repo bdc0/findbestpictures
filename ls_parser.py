@@ -235,9 +235,10 @@ def are_images_similar(des1, des2, threshold=10):
     return len(good_matches) > threshold, len(good_matches)
 
 
-def filter_similar_images(group, method='orb', threshold=None):
+def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
     """
-    Filters a group of files. For visually similar images, keeps only the first one.
+    Filters a group of files. For visually similar images, keeps only the first one
+    (or the sharpest one if use_focus is True).
     Retains all non-image files.
     
     Updates file_info with similarity metadata.
@@ -261,8 +262,10 @@ def filter_similar_images(group, method='orb', threshold=None):
         if not is_image_file(file_info['name']):
             continue
             
-        # Get focus score
-        focus_score = calculate_focus_score(path)
+        # Get focus score if enabled
+        focus_score = 0.0
+        if use_focus:
+            focus_score = calculate_focus_score(path)
         file_info['focus_score'] = focus_score
 
         # Extract features based on method
@@ -296,7 +299,7 @@ def filter_similar_images(group, method='orb', threshold=None):
             # Found a match. Compare focus scores to see which to keep.
             kept_file, _, kept_focus = kept_images[match_idx]
             
-            if focus_score > kept_focus:
+            if use_focus and focus_score > kept_focus:
                 # This image is sharper! Swap it in as the representative.
                 # Mark the old one as duplicate of this one
                 kept_file['is_duplicate'] = True
@@ -307,7 +310,7 @@ def filter_similar_images(group, method='orb', threshold=None):
                 # Replace representative in kept_images
                 kept_images[match_idx] = (file_info, features, focus_score)
             else:
-                # Kept one is sharper. Mark this one as duplicate.
+                # Kept one is sharper (or focus is disabled). Mark this one as duplicate.
                 file_info['is_duplicate'] = True
                 file_info['similarity_to'] = kept_file['name']
                 file_info['similarity_score'] = last_score
@@ -329,6 +332,7 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="store_true", help="Print processing statistics to stderr")
     parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
     parser.add_argument("--clean", action="store_true", help="Remove the 'jpg' directory after processing (use only with --convert-heic)")
+    parser.add_argument("--no-focus", action="store_false", dest="focus", default=True, help="Disable focus-based selection (keep the first similar image instead)")
     args = parser.parse_args()
 
     # Validation
@@ -391,7 +395,7 @@ if __name__ == "__main__":
     if HAS_OPENCV:
         # Default thresholds
         threshold = args.threshold if args.threshold is not None else 10
-        groups = [filter_similar_images(g, method=args.method, threshold=threshold) for g in groups]
+        groups = [filter_similar_images(g, method=args.method, threshold=threshold, use_focus=args.focus) for g in groups]
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     

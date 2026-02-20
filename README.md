@@ -80,4 +80,5 @@ python3 ls_parser.py /path/to/photos --json
   - For `phash`: The maximum Hamming distance (default: 10, lower is more similar).
 - `--convert-heic`: Safety first! The script will exit if a `jpg/` directory already exists to prevent accidental overwrites.
 - `--clean`: Automatically remove the temporary `jpg/` directory after processing. Only valid with `--convert-heic`.
+- `--no-focus`: Disable the focus-based selection logic. Instead of picking the sharpest image, the script will simply keep the first image found in each similarity group (previous behavior).
 

@@ -469,6 +469,28 @@ class TestFocusSelection:
         assert blurry['is_duplicate'] is True
         assert blurry['similarity_to'] == "sharp.png"
 
+    def test_can_disable_focus_selection(self, monkeypatch):
+        """If use_focus=False, the first image is kept even if subsequent is sharper."""
+        monkeypatch.setattr(ls_parser, "calculate_focus_score", lambda p: 10.0 if "blurry" in p else 100.0)
+        monkeypatch.setattr(ls_parser, "are_images_similar", lambda *a, **k: (True, 300))
+        monkeypatch.setattr(ls_parser, "get_orb_descriptor", lambda *a: np.zeros((10, 32), dtype=np.uint8))
+
+        group = [
+            {'name': 'blurry.png', 'path': 'dir/blurry.png', 'timestamp': 1000},
+            {'name': 'sharp.png', 'path': 'dir/sharp.png', 'timestamp': 1001},
+        ]
+        
+        # When focus is disabled, blurry (first) should be kept
+        result = ls_parser.filter_similar_images(group, method='orb', threshold=10, use_focus=False)
+        
+        blurry = next(f for f in result if f['name'] == 'blurry.png')
+        sharp = next(f for f in result if f['name'] == 'sharp.png')
+        
+        assert blurry['is_duplicate'] is False
+        assert sharp['is_duplicate'] is True
+        assert sharp['similarity_to'] == "blurry.png"
+
+
 # ============================================================================
 # Tests: filter_similar_images (requires OpenCV)
 # ============================================================================

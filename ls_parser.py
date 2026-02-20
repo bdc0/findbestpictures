@@ -38,6 +38,10 @@ def parse_ls_l(directory="."):
             # Skip total line
             if line.startswith('total'):
                 continue
+            
+            # Skip directories (permissions start with 'd')
+            if line.startswith('d'):
+                continue
                 
             match = ls_pattern.match(line)
             if match:
@@ -213,12 +217,26 @@ def filter_similar_images(group):
     
     return filtered_group
 
+import shutil
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
     parser.add_argument("--json", action="store_true", help="Output in JSON format instead of original ls lines")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress all output")
+    parser.add_argument("--copy", action="store_true", help="Copy unique files to a 'unique' subdirectory")
     args = parser.parse_args()
+
+    # Ensure valid directory for copy operation
+    target_dir = args.directory
+    if args.copy:
+        unique_dir = os.path.join(target_dir, "unique")
+        if not os.path.exists(unique_dir):
+            try:
+                os.makedirs(unique_dir)
+            except OSError as e:
+                print(f"Error creating directory {unique_dir}: {e}", file=sys.stderr)
+                sys.exit(1)
 
     files = parse_ls_l(args.directory)
     groups = group_files_by_time(files)
@@ -230,6 +248,24 @@ if __name__ == "__main__":
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     
+    # Copy files if requested
+    if args.copy:
+        count = 0
+        for group in groups:
+            for file_info in group:
+                try:
+                    src = file_info['path']
+                    # Keep filename, copy to unique_dir
+                    dst = os.path.join(unique_dir, file_info['name'])
+                    # copy2 preserves metadata (timestamps) which might be useful
+                    shutil.copy2(src, dst)
+                    count += 1
+                except Exception as e:
+                    print(f"Error copying {file_info['name']}: {e}", file=sys.stderr)
+        
+        if not args.quiet:
+            print(f"Copied {count} files to '{unique_dir}'")
+
     if args.quiet:
         sys.exit(0)
 

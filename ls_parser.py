@@ -113,16 +113,28 @@ def is_image_file(filename):
     return os.path.splitext(filename)[1].lower() in image_extensions
 
 def get_orb_descriptor(image_path):
-    """Computes ORB descriptor for an image."""
+    """Computes ORB descriptor for an image.
+    
+    For HEIC/HEIF files that OpenCV can't read, automatically tries the
+    converted JPG in the 'jpg' subdirectory (created by --convert-heic).
+    """
     if not HAS_OPENCV:
         return None
     
     try:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
-            # warn user
-            print(f"Warning: Could not read image '{image_path}'. Skipping visual check.", file=sys.stderr)
-            return None
+            # Try converted JPG for HEIC/HEIF files
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ('.heic', '.heif'):
+                parent_dir = os.path.dirname(image_path)
+                basename = os.path.splitext(os.path.basename(image_path))[0]
+                jpg_path = os.path.join(parent_dir, "jpg", basename + ".jpg")
+                if os.path.exists(jpg_path):
+                    img = cv2.imread(jpg_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                print(f"Warning: Could not read image '{image_path}'. Skipping visual check.", file=sys.stderr)
+                return None
         
         orb = cv2.ORB_create()
         _, des = orb.detectAndCompute(img, None)
@@ -227,6 +239,7 @@ if __name__ == "__main__":
     parser.add_argument("--copy", action="store_true", help="Copy unique files to a 'unique' subdirectory")
     parser.add_argument("--threshold", type=int, default=10, help="Minimum number of ORB matches for visual similarity (default: 10)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print processing stats to stderr")
+    parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC files to JPG in a 'jpg' subdirectory")
     args = parser.parse_args()
 
     # Ensure valid directory for copy operation
@@ -239,6 +252,34 @@ if __name__ == "__main__":
             except OSError as e:
                 print(f"Error creating directory {unique_dir}: {e}", file=sys.stderr)
                 sys.exit(1)
+    # Convert HEIC to JPG if requested
+    if args.convert_heic:
+        jpg_dir = os.path.join(target_dir, "jpg")
+        if os.path.exists(jpg_dir):
+            print(f"Error: '{jpg_dir}' already exists. Remove it first.", file=sys.stderr)
+            sys.exit(1)
+        os.makedirs(jpg_dir)
+        if args.verbose:
+            print(f"Converting HEIC files to JPG in '{jpg_dir}'...", file=sys.stderr)
+        try:
+            result = subprocess.run(
+                ['magick', 'mogrify', '-path', jpg_dir, '-format', 'jpg', '*.HEIC'],
+                cwd=target_dir,
+                capture_output=True, text=True,
+            )
+            # Also try lowercase .heic
+            subprocess.run(
+                ['magick', 'mogrify', '-path', jpg_dir, '-format', 'jpg', '*.heic'],
+                cwd=target_dir,
+                capture_output=True, text=True,
+            )
+            if args.verbose:
+                # Count converted files
+                jpg_count = len([f for f in os.listdir(jpg_dir) if f.lower().endswith('.jpg')])
+                print(f"Converted: {jpg_count} JPG files", file=sys.stderr)
+        except FileNotFoundError:
+            print("Error: 'magick' command not found. Install ImageMagick.", file=sys.stderr)
+            sys.exit(1)
 
     files = parse_ls_l(args.directory)
     if args.verbose:

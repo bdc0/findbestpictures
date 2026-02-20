@@ -274,6 +274,31 @@ class TestGetOrbDescriptor:
         des = ls_parser.get_orb_descriptor(str(txt))
         assert des is None
 
+    def test_heic_fallback_to_jpg(self, tmp_path):
+        """HEIC files fall back to the converted JPG in the jpg/ subdirectory."""
+        import cv2
+        import numpy as np
+        # Create a fake .heic file (OpenCV can't read it)
+        heic_file = tmp_path / "photo.HEIC"
+        heic_file.write_bytes(b"not a real image")
+        # Create jpg/ subdir with a real JPG
+        jpg_dir = tmp_path / "jpg"
+        jpg_dir.mkdir()
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        cv2.imwrite(str(jpg_dir / "photo.jpg"), img)
+        # Should fall back to jpg/photo.jpg
+        des = ls_parser.get_orb_descriptor(str(heic_file))
+        assert des is not None
+
+    def test_heic_no_fallback_warns(self, tmp_path, capsys):
+        """HEIC without a converted JPG prints a warning and returns None."""
+        heic_file = tmp_path / "photo.HEIC"
+        heic_file.write_bytes(b"not a real image")
+        des = ls_parser.get_orb_descriptor(str(heic_file))
+        assert des is None
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+
 
 # ============================================================================
 # Tests: are_images_similar (requires OpenCV)
@@ -514,4 +539,32 @@ class TestCLI:
         assert "Files found:" not in r.stderr
         assert "Groups:" not in r.stderr
         assert "Unique files:" not in r.stderr
+
+    def test_convert_heic_exits_if_jpg_dir_exists(self, tmp_path):
+        """--convert-heic exits with error if 'jpg' subdirectory already exists."""
+        jpg_dir = tmp_path / "jpg"
+        jpg_dir.mkdir()
+        r = self._run(str(tmp_path), "--convert-heic")
+        assert r.returncode != 0
+        assert "already exists" in r.stderr
+
+    def test_no_convert_heic_no_jpg_dir(self):
+        """Without --convert-heic, no 'jpg' directory is created."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r = self._run(grouping_dir)
+        assert r.returncode == 0
+        assert not os.path.exists(os.path.join(grouping_dir, "jpg"))
+
+    def test_convert_heic_exits_if_magick_missing(self, tmp_path):
+        """--convert-heic exits with error if 'magick' is not installed."""
+        env = dict(os.environ)
+        env["PATH"] = "/nonexistent"  # ensure magick can't be found
+        result = subprocess.run(
+            [self.PYTHON, self.SCRIPT, str(tmp_path), "--convert-heic"],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode != 0
+        assert "magick" in result.stderr.lower() or "not found" in result.stderr.lower()
 

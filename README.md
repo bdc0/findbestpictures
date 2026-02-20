@@ -5,10 +5,11 @@
 ## Features
 
 - **Group by Time**: Automatically groups files that were taken within a short time window (default 30 seconds).
-- **Visual Similarity Filter**: Uses ORB feature detection (via OpenCV) to identify and filter out near-identical images within each time group.
-- **HEIC Support**: Converts Apple HEIC photos to JPG for similarity processing.
+- **Visual Similarity Filter**: Uses ORB feature detection or Perceptual Hashing (dHash) via OpenCV to identify and filter out near-identical images within each time group.
+- **HEIC Support**: Converts Apple HEIC photos to JPG for similarity processing with optional cleanup.
+- **Detailed Statistics**: Provides a group-by-group breakdown of similarity scores and representative images in verbose mode.
 - **Multiple Output Formats**: Text (original `ls -l` lines) or structured JSON.
-- **Workflow Friendly**: Supports copying unique files to a separate directory for easy review.
+- **Workflow Friendly**: Supports copying unique files to a separate directory under your target folder.
 
 ## Prerequisites
 
@@ -55,12 +56,12 @@ FINISH: Unique files: 2
 ### HEIC to JPG Conversion
 If you have HEIC photos, convert them first to enable visual similarity checking:
 ```bash
-python3 ls_parser.py /path/to/photos --convert-heic -v
+python3 ls_parser.py /path/to/photos --convert-heic --clean -v
 ```
-This creates a `jpg/` subdirectory and populates it with converted images. Both `orb` and `phash` methods will automatically use these converted JPGs when processing HEIC files.
+This creates a `jpg/` subdirectory directly under your target folder, populates it with converted images, and then removes it once processing is complete (if `--clean` is specified). Both `orb` and `phash` methods will automatically use these converted JPGs when processing HEIC files.
 
 ### Copy Unique Files
-Copy the filtered "best" images to a `unique/` subdirectory:
+Copy the filtered "best" images to a `unique/` subdirectory (created directly under your target folder):
 ```bash
 python3 ls_parser.py /path/to/photos --copy
 ```
@@ -73,9 +74,10 @@ python3 ls_parser.py /path/to/photos --json
 
 ## Configuration
 
-- `--method`: Choose between `orb` and `phash`.
+- `--method`: Choose between `orb` (default) and `phash`.
 - `--threshold`: Adjust the visual similarity sensitivity. 
   - For `orb`: The minimum number of good matches (default: 10).
   - For `phash`: The maximum Hamming distance (default: 10, lower is more similar).
 - `--convert-heic`: Safety first! The script will exit if a `jpg/` directory already exists to prevent accidental overwrites.
+- `--clean`: Automatically remove the temporary `jpg/` directory after processing. Only valid with `--convert-heic`.
 

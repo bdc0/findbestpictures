@@ -278,12 +278,23 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=int, help="Similarity threshold (ORB: match count, pHash: hamming distance)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print processing statistics to stderr")
     parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
+    parser.add_argument("--clean", action="store_true", help="Remove the 'jpg' directory after processing (use only with --convert-heic)")
     args = parser.parse_args()
 
+    # Validation
+    if args.clean and not args.convert_heic:
+        print("Error: --clean can only be used with --convert-heic.", file=sys.stderr)
+        sys.exit(1)
+
     # Ensure valid directory for copy operation
-    target_dir = args.directory
+    target_dir = os.path.abspath(args.directory)
+    if args.verbose:
+        print(f"Target directory: {target_dir}", file=sys.stderr)
+
     if args.copy:
         unique_dir = os.path.join(target_dir, "unique")
+        if args.verbose:
+            print(f"Unique output directory: {unique_dir}", file=sys.stderr)
         if not os.path.exists(unique_dir):
             try:
                 os.makedirs(unique_dir)
@@ -320,7 +331,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     # Parse and group files
-    files = parse_ls_l(args.directory)
+    files = parse_ls_l(target_dir)
     if args.verbose:
         print(f"Files found: {len(files)}", file=sys.stderr)
 
@@ -388,4 +399,15 @@ if __name__ == "__main__":
                 for f in group:
                     if not f.get('is_duplicate'):
                         print(f['original_line'])
+
+    # Cleanup HEIC temporary files
+    if args.convert_heic and args.clean:
+        jpg_dir = os.path.join(target_dir, "jpg")
+        if os.path.exists(jpg_dir):
+            if args.verbose:
+                print(f"Cleaning up temporary directory '{jpg_dir}'...", file=sys.stderr)
+            try:
+                shutil.rmtree(jpg_dir)
+            except Exception as e:
+                print(f"Error cleaning up '{jpg_dir}': {e}", file=sys.stderr)
 

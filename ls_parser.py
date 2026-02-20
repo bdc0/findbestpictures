@@ -3,7 +3,16 @@ import json
 import re
 import argparse
 import sys
+import os
 from datetime import datetime, timedelta
+
+# Try to import OpenCV
+try:
+    import cv2
+    import numpy as np
+    HAS_OPENCV = True
+except ImportError:
+    HAS_OPENCV = False
 
 def parse_ls_l(directory="."):
     """
@@ -36,6 +45,10 @@ def parse_ls_l(directory="."):
                 # Parse date: Feb 19 12:00:00 2026
                 dt_object = datetime.strptime(date_str, "%b %d %H:%M:%S %Y")
                 
+                filename = match.group(7)
+                # Handle full path if directory is specified
+                full_path = os.path.join(directory, filename)
+                
                 file_info = {
                     'permissions': match.group(1),
                     'links': int(match.group(2)),
@@ -45,7 +58,8 @@ def parse_ls_l(directory="."):
                     'date': date_str,
                     'datetime': dt_object.isoformat(), # Store as ISO for JSON
                     'timestamp': dt_object.timestamp(), # Store timestamp for sorting/calc
-                    'name': match.group(7),
+                    'name': filename,
+                    'path': full_path,
                     'original_line': line
                 }
                 parsed_files.append(file_info)
@@ -89,6 +103,116 @@ def group_files_by_time(files, delta_seconds=30):
         
     return groups
 
+def is_image_file(filename):
+    """Checks if a file is an image based on extension."""
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.gif', '.webp', '.heic', '.heif'}
+    return os.path.splitext(filename)[1].lower() in image_extensions
+
+def get_orb_descriptor(image_path):
+    """Computes ORB descriptor for an image."""
+    if not HAS_OPENCV:
+        return None
+    
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            # warn user
+            print(f"Warning: Could not read image '{image_path}'. Skipping visual check.", file=sys.stderr)
+            return None
+        
+        orb = cv2.ORB_create()
+        _, des = orb.detectAndCompute(img, None)
+        return des
+    except Exception as e:
+        print(f"Error processing image {image_path}: {e}", file=sys.stderr)
+        return None
+
+def are_images_similar(des1, des2, threshold=0.75):
+    """
+    Compares two ORB descriptors using BFMatcher.
+    Returns True if they are similar.
+    """
+    if des1 is None or des2 is None:
+        return False
+        
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+    
+    if not matches:
+        return False
+        
+    # Sort matches by distance
+    matches = sorted(matches, key=lambda x: x.distance)
+    
+    # Calculate similarity score based on number of good matches relative to keypoints
+    # This is a heuristic. 
+    # Logic: If a significant portion of keypoints match well, they are similar.
+    
+    # Simple check: if we have "enough" matches. 
+    # For ORB (default 500 keypoints), let's say 20-30 good matches usually implies similarity 
+    # for near-duplicates.
+    # However, let's use a ratio.
+    
+    # Let's say if > 20% of the keypoints match, it's similar.
+    num_keypoints = min(len(des1), len(des2))
+    if num_keypoints == 0:
+        return False
+        
+    match_ratio = len(matches) / num_keypoints
+    
+    # Using a simpler heuristic for now: Top 30 matches having low distance?
+    # Or just total match count > 50?
+    
+    # Let's use a match count threshold for robustness + distance check.
+    # Top 10 matches average distance < 50?
+    
+    # Let's stick to the prompt: "visually similar". 
+    # ORB isn't perfect for "semantic" similarity, but good for "duplicate/near-duplicate".
+    
+    # Standard approach:
+    good_matches = [m for m in matches if m.distance < 50]
+    
+    # If we have > 10 good matches, call it similar for now.
+    return len(good_matches) > 10
+
+
+def filter_similar_images(group):
+    """
+    Filters a group of files. For visually similar images, keeps only the first one.
+    Retains all non-image files.
+    """
+    if not HAS_OPENCV:
+        # If OpenCV not available, return group as is (or warn?)
+        return group
+        
+    filtered_group = []
+    # List of (file_info, descriptor) for images kept so far in this group
+    kept_images = [] 
+    
+    for file_info in group:
+        path = file_info['path']
+        
+        if not is_image_file(file_info['name']):
+            filtered_group.append(file_info)
+            continue
+            
+        # It's an image
+        des = get_orb_descriptor(path)
+        
+        is_similar = False
+        for kept_file, kept_des in kept_images:
+            if are_images_similar(des, kept_des):
+                is_similar = True
+                break
+        
+        if not is_similar:
+            filtered_group.append(file_info)
+            # Only store descriptor if we successfully computed one
+            if des is not None:
+                kept_images.append((file_info, des))
+    
+    return filtered_group
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
@@ -98,6 +222,13 @@ if __name__ == "__main__":
 
     files = parse_ls_l(args.directory)
     groups = group_files_by_time(files)
+    
+    # Filter groups for similarity
+    if HAS_OPENCV:
+        filtered_groups = [filter_similar_images(g) for g in groups]
+        groups = filtered_groups
+    elif not args.quiet:
+         print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     
     if args.quiet:
         sys.exit(0)

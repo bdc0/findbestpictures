@@ -274,6 +274,58 @@ class TestGetOrbDescriptor:
         des = ls_parser.get_orb_descriptor(str(txt))
         assert des is None
 
+@pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
+class TestGetPhash:
+    """Tests for get_phash()."""
+
+    def test_valid_image(self):
+        """Returns an integer hash for a valid image."""
+        img_path = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        if not os.path.exists(img_path):
+            pytest.skip("test_images not generated")
+        h = ls_parser.get_phash(img_path)
+        assert isinstance(h, int)
+
+    def test_similar_images_similar_hashes(self):
+        """Similar images have similar hashes (small Hamming distance)."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p2 = os.path.join(SCRIPT_DIR, "test_images", "img2.png")
+        if not (os.path.exists(p1) and os.path.exists(p2)):
+            pytest.skip("test_images not generated")
+        h1 = ls_parser.get_phash(p1)
+        h2 = ls_parser.get_phash(p2)
+        # Hamming distance for near-duplicates should be very low (often 0-2)
+        assert ls_parser.hamming_distance(h1, h2) <= 5
+
+    def test_different_images_different_hashes(self):
+        """Different images have different hashes (larger Hamming distance)."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p4 = os.path.join(SCRIPT_DIR, "test_images", "img4.png")
+        if not (os.path.exists(p1) and os.path.exists(p4)):
+            pytest.skip("test_images not generated")
+        h1 = ls_parser.get_phash(p1)
+        h2 = ls_parser.get_phash(p4)
+        assert ls_parser.hamming_distance(h1, h2) > 10
+
+class TestHammingDistance:
+    """Tests for hamming_distance()."""
+    
+    def test_identical_hashes(self):
+        assert ls_parser.hamming_distance(0, 0) == 0
+        assert ls_parser.hamming_distance(0xFF, 0xFF) == 0
+        
+    def test_different_hashes(self):
+        # 0x01 (0001) vs 0x02 (0010) -> distance 2
+        assert ls_parser.hamming_distance(0x01, 0x02) == 2
+        # 0xFF vs 0x00 -> distance 8
+        assert ls_parser.hamming_distance(0xFF, 0x00) == 8
+        
+    def test_none_input(self):
+        assert ls_parser.hamming_distance(None, 123) == 999
+        assert ls_parser.hamming_distance(123, None) == 999
+        assert ls_parser.hamming_distance(None, None) == 999
+
+
     def test_heic_fallback_to_jpg(self, tmp_path):
         """HEIC files fall back to the converted JPG in the jpg/ subdirectory."""
         import cv2
@@ -440,6 +492,25 @@ class TestFilterSimilarImages:
         result = ls_parser.filter_similar_images(group, threshold=10)
         assert len(result) == 1
 
+    def test_phash_filtering(self):
+        """Test filtering using pHash method."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+
+        group = [
+            self._img_entry("img1.png", 0),
+            self._img_entry("img2.png", 1),
+            self._img_entry("img4.png", 3),
+        ]
+        # pHash should filter img2 (similar to img1) and keep img4
+        result = ls_parser.filter_similar_images(group, method='phash', threshold=5)
+        names = [f["name"] for f in result]
+        assert "img1.png" in names
+        assert "img4.png" in names
+        assert "img2.png" not in names
+
+
 
 # ============================================================================
 # Tests: CLI / integration
@@ -567,4 +638,14 @@ class TestCLI:
         )
         assert result.returncode != 0
         assert "magick" in result.stderr.lower() or "not found" in result.stderr.lower()
+
+    def test_method_phash_flag(self):
+        """Test --method phash works via CLI."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+        r = self._run(imgs_dir, "--method", "phash", "-v")
+        assert r.returncode == 0
+        # Should still find similar images
+        assert "Unique files: 2" in r.stderr
 

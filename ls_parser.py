@@ -143,6 +143,51 @@ def get_orb_descriptor(image_path):
         print(f"Error processing image {image_path}: {e}", file=sys.stderr)
         return None
 
+def get_phash(image_path):
+    """Computes a 64-bit dHash (difference hash) for an image.
+    
+    Resizes the image to 9x8, converts to grayscale, and compares 
+    adjacent pixels to create the hash.
+    """
+    if not HAS_OPENCV:
+        return None
+        
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            # Try converted JPG for HEIC/HEIF files
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ('.heic', '.heif'):
+                parent_dir = os.path.dirname(image_path)
+                basename = os.path.splitext(os.path.basename(image_path))[0]
+                jpg_path = os.path.join(parent_dir, "jpg", basename + ".jpg")
+                if os.path.exists(jpg_path):
+                    img = cv2.imread(jpg_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                # We already warn in get_orb_descriptor if both fail, 
+                # but since this might be called independently, let's be safe.
+                # However, usually filter_similar_images calls one or the other.
+                return None
+
+        # Resize to 9x8 for dHash
+        resized = cv2.resize(img, (9, 8), interpolation=cv2.INTER_AREA)
+        
+        # Compute difference between adjacent pixels in same row
+        # (result is 8 bits per row * 8 rows = 64 bits)
+        diff = resized[:, 1:] > resized[:, :-1]
+        
+        # Convert boolean array to integer hash
+        return sum([2**i for i, v in enumerate(diff.flatten()) if v])
+    except Exception:
+        return None
+
+def hamming_distance(h1, h2):
+    """Calculates Hamming distance between two 64-bit hashes."""
+    if h1 is None or h2 is None:
+        return 999
+    # Count set bits in XOR of two hashes
+    return bin(h1 ^ h2).count('1')
+
 def are_images_similar(des1, des2, threshold=0.75):
     """
     Compares two ORB descriptors using BFMatcher.
@@ -192,17 +237,19 @@ def are_images_similar(des1, des2, threshold=0.75):
     return len(good_matches) > threshold
 
 
-def filter_similar_images(group, threshold=10):
+def filter_similar_images(group, method='orb', threshold=None):
     """
     Filters a group of files. For visually similar images, keeps only the first one.
     Retains all non-image files.
     """
     if not HAS_OPENCV:
-        # If OpenCV not available, return group as is (or warn?)
         return group
         
+    if threshold is None:
+        threshold = 10 if method == 'orb' else 10
+        
     filtered_group = []
-    # List of (file_info, descriptor) for images kept so far in this group
+    # List of (file_info, features)
     kept_images = [] 
     
     for file_info in group:
@@ -212,20 +259,27 @@ def filter_similar_images(group, threshold=10):
             filtered_group.append(file_info)
             continue
             
-        # It's an image
-        des = get_orb_descriptor(path)
-        
+        # Extract features based on method
+        if method == 'orb':
+            features = get_orb_descriptor(path)
+        else: # phash
+            features = get_phash(path)
+            
         is_similar = False
-        for kept_file, kept_des in kept_images:
-            if are_images_similar(des, kept_des, threshold=threshold):
-                is_similar = True
-                break
+        for kept_file, kept_features in kept_images:
+            if method == 'orb':
+                if are_images_similar(features, kept_features, threshold=threshold):
+                    is_similar = True
+                    break
+            else: # phash
+                if hamming_distance(features, kept_features) <= threshold:
+                    is_similar = True
+                    break
         
         if not is_similar:
             filtered_group.append(file_info)
-            # Only store descriptor if we successfully computed one
-            if des is not None:
-                kept_images.append((file_info, des))
+            if features is not None:
+                kept_images.append((file_info, features))
     
     return filtered_group
 
@@ -239,7 +293,8 @@ if __name__ == "__main__":
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output (useful with --copy or --convert-heic)")
     parser.add_argument("--copy", action="store_true", help="Copy filtered unique files to a 'unique' subdirectory")
-    parser.add_argument("--threshold", type=int, default=10, help="Visual similarity sensitivity (higher = stricter, default: 10)")
+    parser.add_argument("--method", choices=['orb', 'phash'], default='orb', help="Visual similarity method (default: orb)")
+    parser.add_argument("--threshold", type=int, help="Similarity threshold (ORB: match count, pHash: hamming distance)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print processing statistics to stderr")
     parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
     args = parser.parse_args()
@@ -294,7 +349,13 @@ if __name__ == "__main__":
     
     # Filter groups for similarity
     if HAS_OPENCV:
-        filtered_groups = [filter_similar_images(g, threshold=args.threshold) for g in groups]
+        # Default thresholds
+        if args.threshold is None:
+            threshold = 10 # works for both methods by default coincidentally
+        else:
+            threshold = args.threshold
+            
+        filtered_groups = [filter_similar_images(g, method=args.method, threshold=threshold) for g in groups]
         groups = filtered_groups
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)

@@ -25,10 +25,14 @@ python3 ls_parser.py /path/to/photos
 ```
 
 ### Enable Visual Filtering
-Use the `-v` (verbose) flag to see processing stats and filtering results:
+Use the `-v` (verbose) flag to see processing stats and filtering results. You can choose between two similarity methods:
+- `orb` (default): FAST feature matching. Good for near-duplicates.
+- `phash`: Perceptual hashing (dHash). Very fast and robust for similar images.
+
 ```bash
-python3 ls_parser.py /path/to/photos -v
+python3 ls_parser.py /path/to/photos --method phash -v
 ```
+
 Sample Output:
 ```
 Files found: 4
@@ -43,7 +47,7 @@ If you have HEIC photos, convert them first to enable visual similarity checking
 ```bash
 python3 ls_parser.py /path/to/photos --convert-heic -v
 ```
-This creates a `jpg/` subdirectory and populates it with converted images.
+This creates a `jpg/` subdirectory and populates it with converted images. Both `orb` and `phash` methods will automatically use these converted JPGs when processing HEIC files.
 
 ### Copy Unique Files
 Copy the filtered "best" images to a `unique/` subdirectory:
@@ -59,5 +63,9 @@ python3 ls_parser.py /path/to/photos --json
 
 ## Configuration
 
-- `--threshold`: Adjust the visual similarity sensitivity (default: 10). Lower values are more aggressive (remove more images), higher values are more strict.
+- `--method`: Choose between `orb` and `phash`.
+- `--threshold`: Adjust the visual similarity sensitivity. 
+  - For `orb`: The minimum number of good matches (default: 10).
+  - For `phash`: The maximum Hamming distance (default: 10, lower is more similar).
 - `--convert-heic`: Safety first! The script will exit if a `jpg/` directory already exists to prevent accidental overwrites.
+

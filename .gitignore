@@ -1,0 +1,20 @@
+# Virtual Environment
+venv/
+
+# Output directories
+unique/
+jpg/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing
+.pytest_cache/
+test_images/
+test_grouping/
+
+# OS specific
+.DS_Store

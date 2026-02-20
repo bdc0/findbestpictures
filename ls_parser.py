@@ -248,6 +248,9 @@ if __name__ == "__main__":
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     
+    # Filter out empty groups (in case filtering removed all items or logic produced empties)
+    groups = [g for g in groups if g]
+
     # Copy files if requested
     if args.copy:
         count = 0

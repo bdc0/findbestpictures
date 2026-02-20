@@ -181,6 +181,33 @@ def get_phash(image_path):
     except Exception:
         return None
 
+def calculate_focus_score(image_path):
+    """
+    Calculates the focus score of an image using the Laplacian variance method.
+    Higher score indicates a sharper image.
+    """
+    if not HAS_OPENCV:
+        return 0.0
+        
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            # Try converted JPG for HEIC/HEIF files
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ('.heic', '.heif'):
+                parent_dir = os.path.dirname(image_path)
+                basename = os.path.splitext(os.path.basename(image_path))[0]
+                jpg_path = os.path.join(parent_dir, "jpg", basename + ".jpg")
+                if os.path.exists(jpg_path):
+                    img = cv2.imread(jpg_path, cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                return 0.0
+        
+        # Calculate Laplacian variance
+        return cv2.Laplacian(img, cv2.CV_64F).var()
+    except Exception:
+        return 0.0
+
 def hamming_distance(h1, h2):
     """Calculates Hamming distance between two 64-bit hashes."""
     if h1 is None or h2 is None:
@@ -221,7 +248,7 @@ def filter_similar_images(group, method='orb', threshold=None):
     if threshold is None:
         threshold = 10 if method == 'orb' else 10
         
-    # List of (file_info, features)
+    # List of (file_info, features, focus_score)
     kept_images = [] 
     
     for file_info in group:
@@ -229,38 +256,61 @@ def filter_similar_images(group, method='orb', threshold=None):
         file_info['is_duplicate'] = False
         file_info['similarity_to'] = None
         file_info['similarity_score'] = None
+        file_info['focus_score'] = 0.0
         
         if not is_image_file(file_info['name']):
             continue
             
+        # Get focus score
+        focus_score = calculate_focus_score(path)
+        file_info['focus_score'] = focus_score
+
         # Extract features based on method
         if method == 'orb':
             features = get_orb_descriptor(path)
         else: # phash
             features = get_phash(path)
             
-        is_similar = False
-        for kept_file, kept_features in kept_images:
+        match_idx = -1
+        last_score = None
+        
+        for idx, (kept_file, kept_features, kept_focus) in enumerate(kept_images):
             if method == 'orb':
                 similar, score = are_images_similar(features, kept_features, threshold=threshold)
                 if similar:
-                    is_similar = True
-                    file_info['is_duplicate'] = True
-                    file_info['similarity_to'] = kept_file['name']
-                    file_info['similarity_score'] = score
+                    match_idx = idx
+                    last_score = score
                     break
             else: # phash
                 dist = hamming_distance(features, kept_features)
                 if dist <= threshold:
-                    is_similar = True
-                    file_info['is_duplicate'] = True
-                    file_info['similarity_to'] = kept_file['name']
-                    file_info['similarity_score'] = dist
+                    match_idx = idx
+                    last_score = dist
                     break
         
-        if not is_similar:
+        if match_idx == -1:
+            # New unique image (so far)
             if features is not None:
-                kept_images.append((file_info, features))
+                kept_images.append((file_info, features, focus_score))
+        else:
+            # Found a match. Compare focus scores to see which to keep.
+            kept_file, _, kept_focus = kept_images[match_idx]
+            
+            if focus_score > kept_focus:
+                # This image is sharper! Swap it in as the representative.
+                # Mark the old one as duplicate of this one
+                kept_file['is_duplicate'] = True
+                kept_file['similarity_to'] = file_info['name']
+                # Re-using the same match score since they are similar
+                kept_file['similarity_score'] = last_score
+                
+                # Replace representative in kept_images
+                kept_images[match_idx] = (file_info, features, focus_score)
+            else:
+                # Kept one is sharper. Mark this one as duplicate.
+                file_info['is_duplicate'] = True
+                file_info['similarity_to'] = kept_file['name']
+                file_info['similarity_score'] = last_score
     
     return group
 
@@ -361,11 +411,12 @@ if __name__ == "__main__":
         for i, group in enumerate(groups, 1):
             print(f"\nGroup {i} ({len(group)} files):", file=sys.stderr)
             for f in group:
+                focus_info = f" (focus: {f.get('focus_score', 0):.1f})" if f.get('focus_score') else ""
                 if f.get('is_duplicate'):
                     method_label = "dist" if args.method == 'phash' else "matches"
-                    print(f"  [DUP]  {f['name']:30} (matched {f['similarity_to']} with {f['similarity_score']} {method_label})", file=sys.stderr)
+                    print(f"  [DUP]  {f['name']:30} (matched {f['similarity_to']} with {f['similarity_score']} {method_label}){focus_info}", file=sys.stderr)
                 else:
-                    print(f"  [KEEP] {f['name']:30}", file=sys.stderr)
+                    print(f"  [KEEP] {f['name']:30}{focus_info}", file=sys.stderr)
         
         print("\n" + "="*50, file=sys.stderr)
         print(f"FINISH: Unique files: {unique_count}", file=sys.stderr)

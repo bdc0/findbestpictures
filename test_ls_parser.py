@@ -9,6 +9,7 @@ import sys
 import json
 import pytest
 import subprocess
+import numpy as np
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
 
@@ -424,6 +425,50 @@ class TestAreImagesSimilar:
         assert score > 0 # should still have matches
 
 
+class TestFocusSelection:
+    """Tests for focus score and selection logic."""
+
+    def test_calculate_focus_score(self):
+        """Focus score should be a positive number for real images."""
+        img_path = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        if not os.path.exists(img_path):
+            pytest.skip("test_images not generated")
+        
+        score = ls_parser.calculate_focus_score(img_path)
+        assert isinstance(score, float)
+        assert score > 0
+
+    def test_selects_sharpest_among_duplicates(self, monkeypatch):
+        """If images are similar, the one with the higher focus score is kept."""
+        # We'll mock calculate_focus_score to give us controlled values
+        def mock_focus(path):
+            if "blurry" in path:
+                return 10.0
+            return 100.0
+
+        monkeypatch.setattr(ls_parser, "calculate_focus_score", mock_focus)
+        
+        # Mock are_images_similar to always return True (they are duplicates)
+        monkeypatch.setattr(ls_parser, "are_images_similar", lambda *a, **k: (True, 300))
+        monkeypatch.setattr(ls_parser, "get_orb_descriptor", lambda *a: np.zeros((10, 32), dtype=np.uint8))
+
+        group = [
+            {'name': 'blurry.png', 'path': 'dir/blurry.png', 'timestamp': 1000},
+            {'name': 'sharp.png', 'path': 'dir/sharp.png', 'timestamp': 1001},
+        ]
+        
+        # Initial order: blurry then sharp
+        result = ls_parser.filter_similar_images(group, method='orb', threshold=10)
+        
+        blurry = next(f for f in result if f['name'] == 'blurry.png')
+        sharp = next(f for f in result if f['name'] == 'sharp.png')
+        
+        # Sharp was processed second, but it has higher focus, so it should be kept
+        # and blurry should be marked duplicate
+        assert sharp['is_duplicate'] is False
+        assert blurry['is_duplicate'] is True
+        assert blurry['similarity_to'] == "sharp.png"
+
 # ============================================================================
 # Tests: filter_similar_images (requires OpenCV)
 # ============================================================================
@@ -452,14 +497,20 @@ class TestFilterSimilarImages:
         ]
         result = ls_parser.filter_similar_images(group, threshold=10)
         kept_names = [f["name"] for f in result if not f.get('is_duplicate')]
-        assert "img1.png" in kept_names  # kept (first)
-        assert "img4.png" in kept_names  # kept (unique)
-        assert "img2.png" not in kept_names  # filtered (duplicate)
-        assert "img3.png" not in kept_names  # filtered (near-duplicate)
+        # One of img1, img2, img3 should be kept (they are all similar)
+        # and img4 should be kept (it's unique)
+        assert any(name in kept_names for name in ["img1.png", "img2.png", "img3.png"])
+        assert "img4.png" in kept_names
+        assert len(kept_names) == 2
 
-        # Also verify duplicate flags
-        assert next(f for f in result if f['name'] == 'img2.png')['is_duplicate'] is True
-        assert next(f for f in result if f['name'] == 'img1.png')['is_duplicate'] is False
+        # Exactly one of these should be kept
+        cluster = [f for f in result if f['name'] in ["img1.png", "img2.png", "img3.png"]]
+        kept_in_cluster = [f for f in cluster if not f.get('is_duplicate')]
+        assert len(kept_in_cluster) == 1
+        
+        # Others should be duplicates
+        dups_in_cluster = [f for f in cluster if f.get('is_duplicate')]
+        assert len(dups_in_cluster) == 2
 
     def test_non_image_files_kept(self):
         """Non-image files are always retained regardless of similarity."""
@@ -700,9 +751,10 @@ class TestCLI:
         stderr = r.stderr
         assert "SIMILARITY BREAKDOWN BY GROUP" in stderr
         assert "Group 1" in stderr
-        assert "[KEEP] img1.png" in stderr
-        assert "[DUP]  img2.png" in stderr
-        assert "matched img1.png" in stderr
+        # One of these should be KEEP, others DUP
+        assert any(label in stderr for label in ["[KEEP] img1.png", "[KEEP] img2.png", "[KEEP] img3.png"])
+        assert "[DUP]" in stderr
+        assert "matched" in stderr
 
     def test_clean_removes_jpg_dir(self, tmp_path):
         """--clean removes the 'jpg' subdirectory after (mocked) conversion."""

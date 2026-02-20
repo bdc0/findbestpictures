@@ -4,8 +4,8 @@
 
 ## Features
 
-- **Group by Time**: Automatically groups files that were taken within a short time window (default 30 seconds).
 - **Visual Similarity Filter**: Uses ORB feature detection or Perceptual Hashing (dHash) via OpenCV to identify and filter out near-identical images within each time group.
+- **Smart Selection**: Automatically selects the sharpest (most in-focus) image from a set of duplicates using Laplacian variance scoring.
 - **HEIC Support**: Converts Apple HEIC photos to JPG for similarity processing with optional cleanup.
 - **Detailed Statistics**: Provides a group-by-group breakdown of similarity scores and representative images in verbose mode.
 - **Multiple Output Formats**: Text (original `ls -l` lines) or structured JSON.
@@ -41,10 +41,10 @@ SIMILARITY BREAKDOWN BY GROUP
 ==================================================
 
 Group 1 (4 files):
-  [KEEP] img1.png                      
-  [DUP]  img2.png                      (matched img1.png with 339 matches)
-  [DUP]  img3.png                      (matched img1.png with 310 matches)
-  [KEEP] img4.png                      
+  [KEEP] img1.png                      (focus: 154.2)
+  [DUP]  img2.png                      (matched img1.png with 339 matches) (focus: 154.0)
+  [DUP]  img3.png                      (matched img1.png with 310 matches) (focus: 120.5)
+  [KEEP] img4.png                      (focus: 320.1)
 
 ==================================================
 FINISH: Unique files: 2

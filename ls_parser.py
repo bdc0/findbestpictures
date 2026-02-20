@@ -188,59 +188,32 @@ def hamming_distance(h1, h2):
     # Count set bits in XOR of two hashes
     return bin(h1 ^ h2).count('1')
 
-def are_images_similar(des1, des2, threshold=0.75):
+def are_images_similar(des1, des2, threshold=10):
     """
     Compares two ORB descriptors using BFMatcher.
-    Returns True if they are similar.
+    Returns (is_similar, match_count).
     """
     if des1 is None or des2 is None:
-        return False
+        return False, 0
         
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = bf.match(des1, des2)
     
     if not matches:
-        return False
+        return False, 0
         
-    # Sort matches by distance
-    matches = sorted(matches, key=lambda x: x.distance)
-    
-    # Calculate similarity score based on number of good matches relative to keypoints
-    # This is a heuristic. 
-    # Logic: If a significant portion of keypoints match well, they are similar.
-    
-    # Simple check: if we have "enough" matches. 
-    # For ORB (default 500 keypoints), let's say 20-30 good matches usually implies similarity 
-    # for near-duplicates.
-    # However, let's use a ratio.
-    
-    # Let's say if > 20% of the keypoints match, it's similar.
-    num_keypoints = min(len(des1), len(des2))
-    if num_keypoints == 0:
-        return False
-        
-    match_ratio = len(matches) / num_keypoints
-    
-    # Using a simpler heuristic for now: Top 30 matches having low distance?
-    # Or just total match count > 50?
-    
-    # Let's use a match count threshold for robustness + distance check.
-    # Top 10 matches average distance < 50?
-    
-    # Let's stick to the prompt: "visually similar". 
-    # ORB isn't perfect for "semantic" similarity, but good for "duplicate/near-duplicate".
-    
-    # Standard approach:
+    # Standard approach: count matches with distance < 50
     good_matches = [m for m in matches if m.distance < 50]
     
-    # If we have > threshold good matches, call it similar for now.
-    return len(good_matches) > threshold
+    return len(good_matches) > threshold, len(good_matches)
 
 
 def filter_similar_images(group, method='orb', threshold=None):
     """
     Filters a group of files. For visually similar images, keeps only the first one.
     Retains all non-image files.
+    
+    Updates file_info with similarity metadata.
     """
     if not HAS_OPENCV:
         return group
@@ -248,15 +221,16 @@ def filter_similar_images(group, method='orb', threshold=None):
     if threshold is None:
         threshold = 10 if method == 'orb' else 10
         
-    filtered_group = []
     # List of (file_info, features)
     kept_images = [] 
     
     for file_info in group:
         path = file_info['path']
+        file_info['is_duplicate'] = False
+        file_info['similarity_to'] = None
+        file_info['similarity_score'] = None
         
         if not is_image_file(file_info['name']):
-            filtered_group.append(file_info)
             continue
             
         # Extract features based on method
@@ -268,20 +242,27 @@ def filter_similar_images(group, method='orb', threshold=None):
         is_similar = False
         for kept_file, kept_features in kept_images:
             if method == 'orb':
-                if are_images_similar(features, kept_features, threshold=threshold):
+                similar, score = are_images_similar(features, kept_features, threshold=threshold)
+                if similar:
                     is_similar = True
+                    file_info['is_duplicate'] = True
+                    file_info['similarity_to'] = kept_file['name']
+                    file_info['similarity_score'] = score
                     break
             else: # phash
-                if hamming_distance(features, kept_features) <= threshold:
+                dist = hamming_distance(features, kept_features)
+                if dist <= threshold:
                     is_similar = True
+                    file_info['is_duplicate'] = True
+                    file_info['similarity_to'] = kept_file['name']
+                    file_info['similarity_score'] = dist
                     break
         
         if not is_similar:
-            filtered_group.append(file_info)
             if features is not None:
                 kept_images.append((file_info, features))
     
-    return filtered_group
+    return group
 
 import shutil
 
@@ -338,65 +319,73 @@ if __name__ == "__main__":
             print("Error: 'magick' command not found. Install ImageMagick.", file=sys.stderr)
             sys.exit(1)
 
+    # Parse and group files
     files = parse_ls_l(args.directory)
     if args.verbose:
         print(f"Files found: {len(files)}", file=sys.stderr)
 
     groups = group_files_by_time(files)
-    if args.verbose:
-        group_sizes = [len(g) for g in groups]
-        print(f"Groups: {len(groups)} ({', '.join(str(s) for s in group_sizes)})", file=sys.stderr)
     
     # Filter groups for similarity
     if HAS_OPENCV:
         # Default thresholds
-        if args.threshold is None:
-            threshold = 10 # works for both methods by default coincidentally
-        else:
-            threshold = args.threshold
-            
-        filtered_groups = [filter_similar_images(g, method=args.method, threshold=threshold) for g in groups]
-        groups = filtered_groups
+        threshold = args.threshold if args.threshold is not None else 10
+        groups = [filter_similar_images(g, method=args.method, threshold=threshold) for g in groups]
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     
-    # Filter out empty groups (in case filtering removed all items or logic produced empties)
+    # Filter out empty groups 
     groups = [g for g in groups if g]
 
-    unique_count = sum(len(g) for g in groups)
-    if args.verbose:
-        print(f"Unique files: {unique_count}", file=sys.stderr)
+    # Calculate final unique count
+    unique_count = sum(1 for group in groups for f in group if not f.get('is_duplicate'))
 
-    # Copy files if requested
+    # Output detailed stats to stderr if verbose
+    if args.verbose:
+        print(f"Groups: {len(groups)}", file=sys.stderr)
+        print("\n" + "="*50, file=sys.stderr)
+        print("SIMILARITY BREAKDOWN BY GROUP", file=sys.stderr)
+        print("="*50, file=sys.stderr)
+        
+        for i, group in enumerate(groups, 1):
+            print(f"\nGroup {i} ({len(group)} files):", file=sys.stderr)
+            for f in group:
+                if f.get('is_duplicate'):
+                    method_label = "dist" if args.method == 'phash' else "matches"
+                    print(f"  [DUP]  {f['name']:30} (matched {f['similarity_to']} with {f['similarity_score']} {method_label})", file=sys.stderr)
+                else:
+                    print(f"  [KEEP] {f['name']:30}", file=sys.stderr)
+        
+        print("\n" + "="*50, file=sys.stderr)
+        print(f"FINISH: Unique files: {unique_count}", file=sys.stderr)
+        print("="*50 + "\n", file=sys.stderr)
+
+    # Perform file operations
     if args.copy:
         count = 0
         for group in groups:
-            for file_info in group:
-                try:
-                    src = file_info['path']
-                    # Keep filename, copy to unique_dir
-                    dst = os.path.join(unique_dir, file_info['name'])
-                    # copy2 preserves metadata (timestamps) which might be useful
-                    shutil.copy2(src, dst)
-                    count += 1
-                except Exception as e:
-                    print(f"Error copying {file_info['name']}: {e}", file=sys.stderr)
-        
+            for f in group:
+                if not f.get('is_duplicate'):
+                    try:
+                        shutil.copy2(f['path'], os.path.join(unique_dir, f['name']))
+                        count += 1
+                    except Exception as e:
+                        print(f"Error copying {f['name']}: {e}", file=sys.stderr)
         if not args.quiet:
             print(f"Copied {count} files to '{unique_dir}'")
 
-    if args.quiet:
-        sys.exit(0)
-
-    # Print groups separated by blank line
-    first = True
-    for group in groups:
-        if not first:
-            print() # Blank line between sets
-        first = False
-        
+    # Output to stdout
+    if not args.quiet:
         if args.json:
-            print(json.dumps(group, indent=2))
+            result_files = [f for group in groups for f in group if not f.get('is_duplicate')]
+            print(json.dumps(result_files, indent=2))
         else:
-            for file in group:
-                print(file['original_line'])
+            first = True
+            for group in groups:
+                if not first:
+                    print()
+                first = False
+                for f in group:
+                    if not f.get('is_duplicate'):
+                        print(f['original_line'])
+

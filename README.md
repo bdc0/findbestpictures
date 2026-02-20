@@ -25,22 +25,32 @@ python3 ls_parser.py /path/to/photos
 ```
 
 ### Enable Visual Filtering
-Use the `-v` (verbose) flag to see processing stats and filtering results. You can choose between two similarity methods:
-- `orb` (default): FAST feature matching. Good for near-duplicates.
-- `phash`: Perceptual hashing (dHash). Very fast and robust for similar images.
-
+Use the `-v` (verbose) flag to see processing stats and a detailed breakdown of which images are kept or filtered:
 ```bash
-python3 ls_parser.py /path/to/photos --method phash -v
+python3 ls_parser.py /path/to/photos -v
 ```
 
-Sample Output:
+Sample Verbose Output (stderr):
 ```
 Files found: 4
-Groups: 1 (4)
-Unique files: 2
--rw-r--r--@ 1 user  staff   9519 Feb 19 13:00:00 2026 img1.png
--rw-r--r--@ 1 user  staff  44724 Feb 19 13:00:15 2026 img4.png
+Groups: 1
+
+==================================================
+SIMILARITY BREAKDOWN BY GROUP
+==================================================
+
+Group 1 (4 files):
+  [KEEP] img1.png                      
+  [DUP]  img2.png                      (matched img1.png with 339 matches)
+  [DUP]  img3.png                      (matched img1.png with 310 matches)
+  [KEEP] img4.png                      
+
+==================================================
+FINISH: Unique files: 2
+==================================================
 ```
+*(Note: Verbose stats are printed to **stderr** so they don't interfere with the script's primary output.)*
+
 
 ### HEIC to JPG Conversion
 If you have HEIC photos, convert them first to enable visual similarity checking:

@@ -366,7 +366,8 @@ class TestAreImagesSimilar:
         if not os.path.exists(img_path):
             pytest.skip("test_images not generated — run create_test_files.py first")
         des = ls_parser.get_orb_descriptor(img_path)
-        assert ls_parser.are_images_similar(des, des, threshold=10) is True
+        similar, _ = ls_parser.are_images_similar(des, des, threshold=10)
+        assert similar is True
 
     def test_duplicate_images(self):
         """img1 and img2 (exact copy) should be similar."""
@@ -376,7 +377,8 @@ class TestAreImagesSimilar:
             pytest.skip("test_images not generated")
         des1 = ls_parser.get_orb_descriptor(p1)
         des2 = ls_parser.get_orb_descriptor(p2)
-        assert ls_parser.are_images_similar(des1, des2, threshold=10) is True
+        similar, _ = ls_parser.are_images_similar(des1, des2, threshold=10)
+        assert similar is True
 
     def test_near_duplicate_images(self):
         """img1 and img3 (small patch changed) should be similar."""
@@ -386,7 +388,8 @@ class TestAreImagesSimilar:
             pytest.skip("test_images not generated")
         des1 = ls_parser.get_orb_descriptor(p1)
         des3 = ls_parser.get_orb_descriptor(p3)
-        assert ls_parser.are_images_similar(des1, des3, threshold=10) is True
+        similar, _ = ls_parser.are_images_similar(des1, des3, threshold=10)
+        assert similar is True
 
     def test_different_images(self):
         """img1 and img4 (completely different) should NOT be similar."""
@@ -396,15 +399,16 @@ class TestAreImagesSimilar:
             pytest.skip("test_images not generated")
         des1 = ls_parser.get_orb_descriptor(p1)
         des4 = ls_parser.get_orb_descriptor(p4)
-        assert ls_parser.are_images_similar(des1, des4, threshold=10) is False
+        similar, _ = ls_parser.are_images_similar(des1, des4, threshold=10)
+        assert similar is False
 
     def test_none_descriptor_returns_false(self):
         """If either descriptor is None, similarity is False."""
         import numpy as np
         dummy = np.zeros((10, 32), dtype=np.uint8)
-        assert ls_parser.are_images_similar(None, dummy) is False
-        assert ls_parser.are_images_similar(dummy, None) is False
-        assert ls_parser.are_images_similar(None, None) is False
+        assert ls_parser.are_images_similar(None, dummy)[0] is False
+        assert ls_parser.are_images_similar(dummy, None)[0] is False
+        assert ls_parser.are_images_similar(None, None)[0] is False
 
     def test_high_threshold_rejects_similar(self):
         """With a very high threshold, even duplicates aren't 'similar enough'."""
@@ -415,7 +419,9 @@ class TestAreImagesSimilar:
         des1 = ls_parser.get_orb_descriptor(p1)
         des2 = ls_parser.get_orb_descriptor(p2)
         # threshold=9999 → almost impossible to exceed
-        assert ls_parser.are_images_similar(des1, des2, threshold=9999) is False
+        similar, score = ls_parser.are_images_similar(des1, des2, threshold=9999)
+        assert similar is False
+        assert score > 0 # should still have matches
 
 
 # ============================================================================
@@ -445,11 +451,15 @@ class TestFilterSimilarImages:
             self._img_entry("img4.png", 3),
         ]
         result = ls_parser.filter_similar_images(group, threshold=10)
-        names = [f["name"] for f in result]
-        assert "img1.png" in names  # kept (first)
-        assert "img4.png" in names  # kept (unique)
-        assert "img2.png" not in names  # filtered (duplicate)
-        assert "img3.png" not in names  # filtered (near-duplicate)
+        kept_names = [f["name"] for f in result if not f.get('is_duplicate')]
+        assert "img1.png" in kept_names  # kept (first)
+        assert "img4.png" in kept_names  # kept (unique)
+        assert "img2.png" not in kept_names  # filtered (duplicate)
+        assert "img3.png" not in kept_names  # filtered (near-duplicate)
+
+        # Also verify duplicate flags
+        assert next(f for f in result if f['name'] == 'img2.png')['is_duplicate'] is True
+        assert next(f for f in result if f['name'] == 'img1.png')['is_duplicate'] is False
 
     def test_non_image_files_kept(self):
         """Non-image files are always retained regardless of similarity."""
@@ -458,7 +468,8 @@ class TestFilterSimilarImages:
             _make_file_entry("data.csv", 1005, path="/tmp/data.csv"),
         ]
         result = ls_parser.filter_similar_images(group, threshold=10)
-        assert len(result) == 2
+        kept = [f for f in result if not f.get('is_duplicate')]
+        assert len(kept) == 2
 
     def test_mixed_images_and_non_images(self):
         """Non-images pass through; only duplicate images are filtered."""
@@ -472,10 +483,10 @@ class TestFilterSimilarImages:
             self._img_entry("img2.png", 2),  # duplicate of img1
         ]
         result = ls_parser.filter_similar_images(group, threshold=10)
-        names = [f["name"] for f in result]
-        assert "img1.png" in names
-        assert "notes.txt" in names
-        assert "img2.png" not in names
+        kept_names = [f["name"] for f in result if not f.get('is_duplicate')]
+        assert "img1.png" in kept_names
+        assert "notes.txt" in kept_names
+        assert "img2.png" not in kept_names
 
     def test_empty_group(self):
         """Empty group returns empty list."""
@@ -490,7 +501,8 @@ class TestFilterSimilarImages:
 
         group = [self._img_entry("img1.png", 0)]
         result = ls_parser.filter_similar_images(group, threshold=10)
-        assert len(result) == 1
+        kept = [f for f in result if not f.get('is_duplicate')]
+        assert len(kept) == 1
 
     def test_phash_filtering(self):
         """Test filtering using pHash method."""
@@ -505,10 +517,38 @@ class TestFilterSimilarImages:
         ]
         # pHash should filter img2 (similar to img1) and keep img4
         result = ls_parser.filter_similar_images(group, method='phash', threshold=5)
-        names = [f["name"] for f in result]
-        assert "img1.png" in names
-        assert "img4.png" in names
-        assert "img2.png" not in names
+        kept_names = [f["name"] for f in result if not f.get('is_duplicate')]
+        assert "img1.png" in kept_names
+        assert "img4.png" in kept_names
+        assert "img2.png" not in kept_names
+
+    def test_collects_similarity_metadata(self):
+        """Metadata about duplicates (matched file and score) is collected."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+
+        group = [
+            self._img_entry("img1.png", 0),
+            self._img_entry("img2.png", 1), # duplicate of img1
+        ]
+        
+        # We need to see the whole group to see the duplicate entry
+        # But filter_similar_images returns only kept ones.
+        # Wait, I should probably change tests to look at the objects themselves?
+        # Actually, filter_similar_images modifies objects in place or at least returns bits of them.
+        
+        # Let's verify by checking the objects in the original list
+        ls_parser.filter_similar_images(group, method='orb', threshold=10)
+        
+        img1 = group[0]
+        img2 = group[1]
+        
+        assert img1['is_duplicate'] is False
+        assert img2['is_duplicate'] is True
+        assert img2['similarity_to'] == "img1.png"
+        assert img2['similarity_score'] > 10
+
 
 
 
@@ -578,7 +618,7 @@ class TestCLI:
         r = self._run(grouping_dir, "-v")
         assert r.returncode == 0
         assert "Files found: 5" in r.stderr
-        assert "Groups: 3 (2, 2, 1)" in r.stderr
+        assert "Groups: 3" in r.stderr
         assert "Unique files: 5" in r.stderr
 
     def test_verbose_stdout_unchanged(self):
@@ -598,7 +638,7 @@ class TestCLI:
         r = self._run(imgs_dir, "-v")
         assert r.returncode == 0
         assert "Files found: 4" in r.stderr
-        assert "Groups: 1 (4)" in r.stderr
+        assert "Groups: 1" in r.stderr
         assert "Unique files: 2" in r.stderr
 
     def test_no_verbose_no_stats(self):
@@ -648,4 +688,19 @@ class TestCLI:
         assert r.returncode == 0
         # Should still find similar images
         assert "Unique files: 2" in r.stderr
+
+    def test_verbose_detailed_stats(self):
+        """--verbose prints detailed group breakdown with [KEEP] and [DUP] labels."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+        r = self._run(imgs_dir, "-v")
+        assert r.returncode == 0
+        stderr = r.stderr
+        assert "SIMILARITY BREAKDOWN BY GROUP" in stderr
+        assert "Group 1" in stderr
+        assert "[KEEP] img1.png" in stderr
+        assert "[DUP]  img2.png" in stderr
+        assert "matched img1.png" in stderr
+
 

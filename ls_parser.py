@@ -176,11 +176,11 @@ def are_images_similar(des1, des2, threshold=0.75):
     # Standard approach:
     good_matches = [m for m in matches if m.distance < 50]
     
-    # If we have > 10 good matches, call it similar for now.
-    return len(good_matches) > 10
+    # If we have > threshold good matches, call it similar for now.
+    return len(good_matches) > threshold
 
 
-def filter_similar_images(group):
+def filter_similar_images(group, threshold=10):
     """
     Filters a group of files. For visually similar images, keeps only the first one.
     Retains all non-image files.
@@ -205,7 +205,7 @@ def filter_similar_images(group):
         
         is_similar = False
         for kept_file, kept_des in kept_images:
-            if are_images_similar(des, kept_des):
+            if are_images_similar(des, kept_des, threshold=threshold):
                 is_similar = True
                 break
         
@@ -225,6 +225,7 @@ if __name__ == "__main__":
     parser.add_argument("--json", action="store_true", help="Output in JSON format instead of original ls lines")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress all output")
     parser.add_argument("--copy", action="store_true", help="Copy unique files to a 'unique' subdirectory")
+    parser.add_argument("--threshold", type=int, default=10, help="Minimum number of ORB matches for visual similarity (default: 10)")
     args = parser.parse_args()
 
     # Ensure valid directory for copy operation
@@ -243,7 +244,7 @@ if __name__ == "__main__":
     
     # Filter groups for similarity
     if HAS_OPENCV:
-        filtered_groups = [filter_similar_images(g) for g in groups]
+        filtered_groups = [filter_similar_images(g, threshold=args.threshold) for g in groups]
         groups = filtered_groups
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)

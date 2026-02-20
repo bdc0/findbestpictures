@@ -232,14 +232,16 @@ def filter_similar_images(group, threshold=10):
 import shutil
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parse 'ls -l' output and group by time.")
-    parser.add_argument("directory", nargs="?", default=".", help="Directory to parse (default: current directory)")
-    parser.add_argument("--json", action="store_true", help="Output in JSON format instead of original ls lines")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress all output")
-    parser.add_argument("--copy", action="store_true", help="Copy unique files to a 'unique' subdirectory")
-    parser.add_argument("--threshold", type=int, default=10, help="Minimum number of ORB matches for visual similarity (default: 10)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Print processing stats to stderr")
-    parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC files to JPG in a 'jpg' subdirectory")
+    parser = argparse.ArgumentParser(
+        description="Find the best pictures by grouping by timestamp and filtering visual duplicates."
+    )
+    parser.add_argument("directory", nargs="?", default=".", help="Directory containing images to process (default: current directory)")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress output (useful with --copy or --convert-heic)")
+    parser.add_argument("--copy", action="store_true", help="Copy filtered unique files to a 'unique' subdirectory")
+    parser.add_argument("--threshold", type=int, default=10, help="Visual similarity sensitivity (higher = stricter, default: 10)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print processing statistics to stderr")
+    parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
     args = parser.parse_args()
 
     # Ensure valid directory for copy operation

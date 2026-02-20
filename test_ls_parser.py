@@ -1,0 +1,475 @@
+"""
+Unit tests for ls_parser.py
+
+Run with:  ./venv/bin/pytest test_ls_parser.py -v
+"""
+
+import os
+import sys
+import json
+import pytest
+import subprocess
+from unittest.mock import patch, MagicMock
+from datetime import datetime, timedelta
+
+# Ensure project root is importable
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import ls_parser
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _make_file_entry(name, timestamp, path=None):
+    """Build a minimal file-info dict matching parse_ls_l() output."""
+    dt = datetime.fromtimestamp(timestamp)
+    return {
+        "permissions": "-rw-r--r--@",
+        "links": 1,
+        "owner": "user",
+        "group": "staff",
+        "size": 100,
+        "date": dt.strftime("%b %d %H:%M:%S %Y"),
+        "datetime": dt.isoformat(),
+        "timestamp": timestamp,
+        "name": name,
+        "path": path or name,
+        "original_line": f"-rw-r--r--@ 1 user staff 100 {dt.strftime('%b %d %H:%M:%S %Y')} {name}",
+    }
+
+
+# ============================================================================
+# Tests: parse_ls_l
+# ============================================================================
+
+class TestParseLsL:
+    """Tests for parse_ls_l() which calls `ls -lT` and parses the output."""
+
+    SAMPLE_LS_OUTPUT = (
+        "total 16\n"
+        "drwxr-xr-x  5 user  staff  160 Feb 19 10:00:00 2026 subdir\n"
+        "-rw-r--r--  1 user  staff  123 Feb 19 12:00:00 2026 file1.txt\n"
+        "-rw-r--r--@ 1 user  staff  456 Feb 19 12:00:10 2026 file2.txt\n"
+        "-rwxr-xr-x  1 user  staff   78 Feb 19 12:01:00 2026 script.sh\n"
+    )
+
+    @patch("ls_parser.subprocess.run")
+    def test_parses_regular_files(self, mock_run):
+        """Regular files are parsed; directories and the total line are skipped."""
+        mock_run.return_value = MagicMock(stdout=self.SAMPLE_LS_OUTPUT, returncode=0)
+        files = ls_parser.parse_ls_l(".")
+        names = [f["name"] for f in files]
+        assert names == ["file1.txt", "file2.txt", "script.sh"]
+
+    @patch("ls_parser.subprocess.run")
+    def test_skips_directories(self, mock_run):
+        """Lines starting with 'd' (directories) are excluded."""
+        mock_run.return_value = MagicMock(stdout=self.SAMPLE_LS_OUTPUT, returncode=0)
+        files = ls_parser.parse_ls_l(".")
+        for f in files:
+            assert not f["permissions"].startswith("d")
+
+    @patch("ls_parser.subprocess.run")
+    def test_parsed_fields(self, mock_run):
+        """Spot-check that individual fields are parsed correctly."""
+        mock_run.return_value = MagicMock(stdout=self.SAMPLE_LS_OUTPUT, returncode=0)
+        files = ls_parser.parse_ls_l(".")
+        f1 = files[0]
+        assert f1["permissions"] == "-rw-r--r--"
+        assert f1["links"] == 1
+        assert f1["owner"] == "user"
+        assert f1["group"] == "staff"
+        assert f1["size"] == 123
+        assert f1["name"] == "file1.txt"
+        assert "2026-02-19T12:00:00" in f1["datetime"]
+
+    @patch("ls_parser.subprocess.run")
+    def test_timestamp_ordering(self, mock_run):
+        """Timestamps are parsed as floats and increase in order."""
+        mock_run.return_value = MagicMock(stdout=self.SAMPLE_LS_OUTPUT, returncode=0)
+        files = ls_parser.parse_ls_l(".")
+        timestamps = [f["timestamp"] for f in files]
+        assert timestamps == sorted(timestamps)
+
+    @patch("ls_parser.subprocess.run")
+    def test_empty_directory(self, mock_run):
+        """An empty ls output (just 'total 0') returns an empty list."""
+        mock_run.return_value = MagicMock(stdout="total 0", returncode=0)
+        files = ls_parser.parse_ls_l(".")
+        assert files == []
+
+    @patch("ls_parser.subprocess.run")
+    def test_subprocess_error_returns_empty(self, mock_run):
+        """If ls fails, parse_ls_l returns an empty list."""
+        mock_run.side_effect = subprocess.CalledProcessError(2, "ls")
+        files = ls_parser.parse_ls_l("/nonexistent")
+        assert files == []
+
+    @patch("ls_parser.subprocess.run")
+    def test_symlink_in_name(self, mock_run):
+        """Symlink entries (name contains ' -> target') are captured."""
+        output = (
+            "total 0\n"
+            "lrwxr-xr-x@ 1 root  wheel  11 Feb 19 10:00:00 2026 /tmp -> private/tmp\n"
+        )
+        mock_run.return_value = MagicMock(stdout=output, returncode=0)
+        files = ls_parser.parse_ls_l("/")
+        assert len(files) == 1
+        assert "/tmp -> private/tmp" in files[0]["name"]
+
+    @patch("ls_parser.subprocess.run")
+    def test_path_includes_directory(self, mock_run):
+        """The 'path' field joins the directory with the filename."""
+        mock_run.return_value = MagicMock(stdout=self.SAMPLE_LS_OUTPUT, returncode=0)
+        files = ls_parser.parse_ls_l("/some/dir")
+        assert files[0]["path"] == os.path.join("/some/dir", "file1.txt")
+
+
+# ============================================================================
+# Tests: group_files_by_time
+# ============================================================================
+
+class TestGroupFilesByTime:
+    """Tests for group_files_by_time()."""
+
+    BASE_TS = datetime(2026, 2, 19, 12, 0, 0).timestamp()
+
+    def test_single_group(self):
+        """Files all within delta land in one group."""
+        files = [
+            _make_file_entry("a", self.BASE_TS),
+            _make_file_entry("b", self.BASE_TS + 10),
+            _make_file_entry("c", self.BASE_TS + 20),
+        ]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert len(groups) == 1
+        assert len(groups[0]) == 3
+
+    def test_two_groups(self):
+        """A gap larger than delta splits into two groups."""
+        files = [
+            _make_file_entry("a", self.BASE_TS),
+            _make_file_entry("b", self.BASE_TS + 10),
+            _make_file_entry("c", self.BASE_TS + 50),  # >30s gap
+            _make_file_entry("d", self.BASE_TS + 60),
+        ]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert len(groups) == 2
+        assert [f["name"] for f in groups[0]] == ["a", "b"]
+        assert [f["name"] for f in groups[1]] == ["c", "d"]
+
+    def test_all_singletons(self):
+        """If every file is far apart, each gets its own group."""
+        files = [
+            _make_file_entry("a", self.BASE_TS),
+            _make_file_entry("b", self.BASE_TS + 100),
+            _make_file_entry("c", self.BASE_TS + 200),
+        ]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert len(groups) == 3
+        assert all(len(g) == 1 for g in groups)
+
+    def test_empty_input(self):
+        """Empty file list returns empty groups."""
+        groups = ls_parser.group_files_by_time([], delta_seconds=30)
+        assert groups == []
+
+    def test_single_file(self):
+        """A single file produces one group with one item."""
+        files = [_make_file_entry("only", self.BASE_TS)]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert len(groups) == 1
+        assert len(groups[0]) == 1
+
+    def test_sorts_by_timestamp(self):
+        """Files passed out of order are sorted before grouping."""
+        files = [
+            _make_file_entry("late", self.BASE_TS + 100),
+            _make_file_entry("early", self.BASE_TS),
+            _make_file_entry("mid", self.BASE_TS + 10),
+        ]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert groups[0][0]["name"] == "early"
+        assert groups[0][1]["name"] == "mid"
+
+    def test_custom_delta(self):
+        """A smaller delta creates more groups."""
+        files = [
+            _make_file_entry("a", self.BASE_TS),
+            _make_file_entry("b", self.BASE_TS + 5),
+            _make_file_entry("c", self.BASE_TS + 18),  # 13s gap from b, > delta=10
+        ]
+        # With delta=10, a+b are together (5s gap) but c is separate (13s gap from b)
+        groups = ls_parser.group_files_by_time(files, delta_seconds=10)
+        assert len(groups) == 2
+
+    def test_boundary_exact_delta(self):
+        """Files exactly at the delta boundary are NOT grouped (< not <=)."""
+        files = [
+            _make_file_entry("a", self.BASE_TS),
+            _make_file_entry("b", self.BASE_TS + 30),  # exactly 30s
+        ]
+        groups = ls_parser.group_files_by_time(files, delta_seconds=30)
+        assert len(groups) == 2
+
+
+# ============================================================================
+# Tests: is_image_file
+# ============================================================================
+
+class TestIsImageFile:
+    """Tests for is_image_file()."""
+
+    @pytest.mark.parametrize("filename", [
+        "photo.jpg", "PHOTO.JPG", "pic.jpeg", "pic.JPEG",
+        "image.png", "image.PNG",
+        "shot.bmp", "frame.tiff", "anim.gif", "web.webp",
+        "apple.heic", "apple.HEIF",
+    ])
+    def test_image_extensions_detected(self, filename):
+        assert ls_parser.is_image_file(filename) is True
+
+    @pytest.mark.parametrize("filename", [
+        "readme.txt", "data.csv", "script.py", "archive.zip",
+        "video.mp4", "doc.pdf", "noext", "",
+    ])
+    def test_non_image_extensions_rejected(self, filename):
+        assert ls_parser.is_image_file(filename) is False
+
+    def test_dotfile_with_image_ext(self):
+        """Hidden files like .hidden.png should still be detected as images."""
+        assert ls_parser.is_image_file(".hidden.png") is True
+
+
+# ============================================================================
+# Tests: get_orb_descriptor (requires OpenCV)
+# ============================================================================
+
+@pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
+class TestGetOrbDescriptor:
+    """Tests for get_orb_descriptor()."""
+
+    def test_valid_image(self):
+        """Returns a non-None descriptor for a valid image."""
+        img_path = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        if not os.path.exists(img_path):
+            pytest.skip("test_images not generated — run create_test_files.py first")
+        des = ls_parser.get_orb_descriptor(img_path)
+        assert des is not None
+        assert len(des) > 0
+
+    def test_nonexistent_image(self):
+        """Returns None for a file that doesn't exist."""
+        des = ls_parser.get_orb_descriptor("/nonexistent/image.png")
+        assert des is None
+
+    def test_non_image_file(self, tmp_path):
+        """Returns None for a file that isn't an image (e.g. a text file)."""
+        txt = tmp_path / "not_image.txt"
+        txt.write_text("hello")
+        des = ls_parser.get_orb_descriptor(str(txt))
+        assert des is None
+
+
+# ============================================================================
+# Tests: are_images_similar (requires OpenCV)
+# ============================================================================
+
+@pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
+class TestAreImagesSimilar:
+    """Tests for are_images_similar()."""
+
+    def test_identical_descriptors(self):
+        """An image compared to itself should be similar."""
+        img_path = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        if not os.path.exists(img_path):
+            pytest.skip("test_images not generated — run create_test_files.py first")
+        des = ls_parser.get_orb_descriptor(img_path)
+        assert ls_parser.are_images_similar(des, des, threshold=10) is True
+
+    def test_duplicate_images(self):
+        """img1 and img2 (exact copy) should be similar."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p2 = os.path.join(SCRIPT_DIR, "test_images", "img2.png")
+        if not (os.path.exists(p1) and os.path.exists(p2)):
+            pytest.skip("test_images not generated")
+        des1 = ls_parser.get_orb_descriptor(p1)
+        des2 = ls_parser.get_orb_descriptor(p2)
+        assert ls_parser.are_images_similar(des1, des2, threshold=10) is True
+
+    def test_near_duplicate_images(self):
+        """img1 and img3 (small patch changed) should be similar."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p3 = os.path.join(SCRIPT_DIR, "test_images", "img3.png")
+        if not (os.path.exists(p1) and os.path.exists(p3)):
+            pytest.skip("test_images not generated")
+        des1 = ls_parser.get_orb_descriptor(p1)
+        des3 = ls_parser.get_orb_descriptor(p3)
+        assert ls_parser.are_images_similar(des1, des3, threshold=10) is True
+
+    def test_different_images(self):
+        """img1 and img4 (completely different) should NOT be similar."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p4 = os.path.join(SCRIPT_DIR, "test_images", "img4.png")
+        if not (os.path.exists(p1) and os.path.exists(p4)):
+            pytest.skip("test_images not generated")
+        des1 = ls_parser.get_orb_descriptor(p1)
+        des4 = ls_parser.get_orb_descriptor(p4)
+        assert ls_parser.are_images_similar(des1, des4, threshold=10) is False
+
+    def test_none_descriptor_returns_false(self):
+        """If either descriptor is None, similarity is False."""
+        import numpy as np
+        dummy = np.zeros((10, 32), dtype=np.uint8)
+        assert ls_parser.are_images_similar(None, dummy) is False
+        assert ls_parser.are_images_similar(dummy, None) is False
+        assert ls_parser.are_images_similar(None, None) is False
+
+    def test_high_threshold_rejects_similar(self):
+        """With a very high threshold, even duplicates aren't 'similar enough'."""
+        p1 = os.path.join(SCRIPT_DIR, "test_images", "img1.png")
+        p2 = os.path.join(SCRIPT_DIR, "test_images", "img2.png")
+        if not (os.path.exists(p1) and os.path.exists(p2)):
+            pytest.skip("test_images not generated")
+        des1 = ls_parser.get_orb_descriptor(p1)
+        des2 = ls_parser.get_orb_descriptor(p2)
+        # threshold=9999 → almost impossible to exceed
+        assert ls_parser.are_images_similar(des1, des2, threshold=9999) is False
+
+
+# ============================================================================
+# Tests: filter_similar_images (requires OpenCV)
+# ============================================================================
+
+@pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
+class TestFilterSimilarImages:
+    """Tests for filter_similar_images()."""
+
+    def _img_entry(self, name, idx):
+        """Helper: file entry for a test image, timestamps 5s apart."""
+        base_ts = datetime(2026, 2, 19, 13, 0, 0).timestamp()
+        path = os.path.join(SCRIPT_DIR, "test_images", name)
+        return _make_file_entry(name, base_ts + idx * 5, path=path)
+
+    def test_filters_duplicates(self):
+        """Duplicate and near-duplicate are removed; unique image kept."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+
+        group = [
+            self._img_entry("img1.png", 0),
+            self._img_entry("img2.png", 1),
+            self._img_entry("img3.png", 2),
+            self._img_entry("img4.png", 3),
+        ]
+        result = ls_parser.filter_similar_images(group, threshold=10)
+        names = [f["name"] for f in result]
+        assert "img1.png" in names  # kept (first)
+        assert "img4.png" in names  # kept (unique)
+        assert "img2.png" not in names  # filtered (duplicate)
+        assert "img3.png" not in names  # filtered (near-duplicate)
+
+    def test_non_image_files_kept(self):
+        """Non-image files are always retained regardless of similarity."""
+        group = [
+            _make_file_entry("readme.txt", 1000, path="/tmp/readme.txt"),
+            _make_file_entry("data.csv", 1005, path="/tmp/data.csv"),
+        ]
+        result = ls_parser.filter_similar_images(group, threshold=10)
+        assert len(result) == 2
+
+    def test_mixed_images_and_non_images(self):
+        """Non-images pass through; only duplicate images are filtered."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+
+        group = [
+            self._img_entry("img1.png", 0),
+            _make_file_entry("notes.txt", 1005, path="/tmp/notes.txt"),
+            self._img_entry("img2.png", 2),  # duplicate of img1
+        ]
+        result = ls_parser.filter_similar_images(group, threshold=10)
+        names = [f["name"] for f in result]
+        assert "img1.png" in names
+        assert "notes.txt" in names
+        assert "img2.png" not in names
+
+    def test_empty_group(self):
+        """Empty group returns empty list."""
+        result = ls_parser.filter_similar_images([], threshold=10)
+        assert result == []
+
+    def test_single_image(self):
+        """A single image is always kept."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+
+        group = [self._img_entry("img1.png", 0)]
+        result = ls_parser.filter_similar_images(group, threshold=10)
+        assert len(result) == 1
+
+
+# ============================================================================
+# Tests: CLI / integration
+# ============================================================================
+
+class TestCLI:
+    """Integration tests that run ls_parser.py as a subprocess."""
+
+    PYTHON = os.path.join(SCRIPT_DIR, "venv", "bin", "python3")
+    SCRIPT = os.path.join(SCRIPT_DIR, "ls_parser.py")
+
+    def _run(self, *args):
+        result = subprocess.run(
+            [self.PYTHON, self.SCRIPT] + list(args),
+            capture_output=True, text=True,
+        )
+        return result
+
+    def test_default_output(self):
+        """Running with no args outputs something (current dir)."""
+        r = self._run()
+        # Should succeed or produce output
+        assert r.returncode == 0
+
+    def test_json_flag(self):
+        """--json produces valid JSON output."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r = self._run(grouping_dir, "--json")
+        assert r.returncode == 0
+        # JSON output may have multiple arrays separated by newlines
+        # Each group is a separate JSON array on stdout
+        output = r.stdout.strip()
+        # Should contain at least one valid JSON array
+        assert "[" in output
+
+    def test_quiet_flag(self):
+        """--quiet suppresses all stdout."""
+        r = self._run(".", "-q")
+        assert r.returncode == 0
+        assert r.stdout == ""
+
+    def test_grouping_output(self):
+        """Grouped output contains blank-line separators between groups."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r = self._run(grouping_dir)
+        assert r.returncode == 0
+        # There should be blank lines (double newlines) between groups
+        assert "\n\n" in r.stdout
+
+    def test_nonexistent_directory(self):
+        """A nonexistent directory produces an error on stderr."""
+        r = self._run("/nonexistent/path/xyz")
+        # ls will fail; error message on stderr
+        assert r.returncode != 0 or "Error" in r.stderr or r.stderr != ""

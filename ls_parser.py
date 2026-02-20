@@ -226,6 +226,7 @@ if __name__ == "__main__":
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress all output")
     parser.add_argument("--copy", action="store_true", help="Copy unique files to a 'unique' subdirectory")
     parser.add_argument("--threshold", type=int, default=10, help="Minimum number of ORB matches for visual similarity (default: 10)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print processing stats to stderr")
     args = parser.parse_args()
 
     # Ensure valid directory for copy operation
@@ -240,7 +241,13 @@ if __name__ == "__main__":
                 sys.exit(1)
 
     files = parse_ls_l(args.directory)
+    if args.verbose:
+        print(f"Files found: {len(files)}", file=sys.stderr)
+
     groups = group_files_by_time(files)
+    if args.verbose:
+        group_sizes = [len(g) for g in groups]
+        print(f"Groups: {len(groups)} ({', '.join(str(s) for s in group_sizes)})", file=sys.stderr)
     
     # Filter groups for similarity
     if HAS_OPENCV:
@@ -251,6 +258,10 @@ if __name__ == "__main__":
     
     # Filter out empty groups (in case filtering removed all items or logic produced empties)
     groups = [g for g in groups if g]
+
+    unique_count = sum(len(g) for g in groups)
+    if args.verbose:
+        print(f"Unique files: {unique_count}", file=sys.stderr)
 
     # Copy files if requested
     if args.copy:

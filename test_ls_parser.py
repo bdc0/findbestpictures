@@ -473,3 +473,45 @@ class TestCLI:
         r = self._run("/nonexistent/path/xyz")
         # ls will fail; error message on stderr
         assert r.returncode != 0 or "Error" in r.stderr or r.stderr != ""
+
+    def test_verbose_prints_stats(self):
+        """--verbose prints Files found, Groups, and Unique files to stderr."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r = self._run(grouping_dir, "-v")
+        assert r.returncode == 0
+        assert "Files found: 5" in r.stderr
+        assert "Groups: 3 (2, 2, 1)" in r.stderr
+        assert "Unique files: 5" in r.stderr
+
+    def test_verbose_stdout_unchanged(self):
+        """--verbose doesn't contaminate stdout — stats go to stderr only."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r_normal = self._run(grouping_dir)
+        r_verbose = self._run(grouping_dir, "-v")
+        assert r_normal.stdout == r_verbose.stdout
+
+    def test_verbose_with_image_filtering(self):
+        """--verbose shows reduced unique count after similarity filtering."""
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+        r = self._run(imgs_dir, "-v")
+        assert r.returncode == 0
+        assert "Files found: 4" in r.stderr
+        assert "Groups: 1 (4)" in r.stderr
+        assert "Unique files: 2" in r.stderr
+
+    def test_no_verbose_no_stats(self):
+        """Without --verbose, stderr has no stats lines."""
+        grouping_dir = os.path.join(SCRIPT_DIR, "test_grouping")
+        if not os.path.exists(grouping_dir):
+            pytest.skip("test_grouping not generated")
+        r = self._run(grouping_dir)
+        assert "Files found:" not in r.stderr
+        assert "Groups:" not in r.stderr
+        assert "Unique files:" not in r.stderr
+

@@ -208,6 +208,53 @@ def calculate_focus_score(image_path):
     except Exception:
         return 0.0
 
+def detect_eyes(image_path):
+    """
+    Detects faces and eyes in an image.
+    Returns (faces_count, eyes_count, all_eyes_open).
+    'all_eyes_open' is True if every face has at least 2 eyes detected.
+    """
+    if not HAS_OPENCV:
+        return 0, 0, True
+        
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            # Try converted JPG for HEIC/HEIF files
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ('.heic', '.heif'):
+                parent_dir = os.path.dirname(image_path)
+                basename = os.path.splitext(os.path.basename(image_path))[0]
+                jpg_path = os.path.join(parent_dir, "jpg", basename + ".jpg")
+                if os.path.exists(jpg_path):
+                    img = cv2.imread(jpg_path)
+            if img is None:
+                return 0, 0, True
+        
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Load cascades
+        face_cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml'))
+        eye_cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, 'haarcascade_eye.xml'))
+        
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        faces_count = len(faces)
+        total_eyes = 0
+        all_eyes_open = True
+        
+        for (x, y, w, h) in faces:
+            roi_gray = gray[y:y+h, x:x+w]
+            eyes = eye_cascade.detectMultiScale(roi_gray)
+            total_eyes += len(eyes)
+            if len(eyes) < 2:
+                all_eyes_open = False
+                
+        return faces_count, total_eyes, all_eyes_open
+    except Exception as e:
+        # print(f"Error detecting eyes in {image_path}: {e}", file=sys.stderr)
+        return 0, 0, True
+
 def hamming_distance(h1, h2):
     """Calculates Hamming distance between two 64-bit hashes."""
     if h1 is None or h2 is None:
@@ -235,10 +282,10 @@ def are_images_similar(des1, des2, threshold=10):
     return len(good_matches) > threshold, len(good_matches)
 
 
-def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
+def filter_similar_images(group, method='orb', threshold=None, use_focus=True, use_eyes=False):
     """
     Filters a group of files. For visually similar images, keeps only the first one
-    (or the sharpest one if use_focus is True).
+    (or the sharpest/best one based on criteria).
     Retains all non-image files.
     
     Updates file_info with similarity metadata.
@@ -249,7 +296,8 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
     if threshold is None:
         threshold = 10 if method == 'orb' else 10
         
-    # List of (file_info, features, focus_score)
+    # List of (file_info, features, score_tuple)
+    # score_tuple = (all_eyes_open, focus_score) - used for comparison
     kept_images = [] 
     
     for file_info in group:
@@ -258,21 +306,28 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
         file_info['similarity_to'] = None
         file_info['similarity_score'] = None
         file_info['focus_score'] = 0.0
+        file_info['eyes_status'] = None # (faces, eyes, all_open)
         
         if not is_image_file(file_info['name']):
             continue
             
-        # Get focus score if enabled
+        # Get focus and eye scores
         focus_score = 0.0
         if use_focus:
             focus_score = calculate_focus_score(path)
         file_info['focus_score'] = focus_score
 
+        all_eyes_open = True
+        if use_eyes:
+            f_count, e_count, all_open = detect_eyes(path)
+            file_info['eyes_status'] = (f_count, e_count, all_open)
+            all_eyes_open = all_open
+        
+        current_score = (all_eyes_open, focus_score)
+
         # Extract features based on method
         if method == 'orb':
             features = get_orb_descriptor(path)
-            # For ORB, we store a truncated representation or match count if we wanted,
-            # but for "hash" display, let's store a hex string if it's phash or "ORB" if it's orb
             file_info['phash'] = "ORB" if features is not None else None
         else: # phash
             features = get_phash(path)
@@ -284,7 +339,7 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
         match_idx = -1
         last_score = None
         
-        for idx, (kept_file, kept_features, kept_focus) in enumerate(kept_images):
+        for idx, (kept_file, kept_features, kept_score) in enumerate(kept_images):
             if method == 'orb':
                 similar, score = are_images_similar(features, kept_features, threshold=threshold)
                 if similar:
@@ -301,23 +356,23 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
         if match_idx == -1:
             # New unique image (so far)
             if features is not None:
-                kept_images.append((file_info, features, focus_score))
+                kept_images.append((file_info, features, current_score))
         else:
-            # Found a match. Compare focus scores to see which to keep.
-            kept_file, _, kept_focus = kept_images[match_idx]
+            # Found a match. Compare scores to see which to keep.
+            kept_file, _, kept_score = kept_images[match_idx]
             
-            if use_focus and focus_score > kept_focus:
-                # This image is sharper! Swap it in as the representative.
-                # Mark the old one as duplicate of this one
+            # Compare current_score with kept_score
+            # (all_eyes_open, focus_score) - higher is better for both
+            if current_score > kept_score:
+                # This image is better! Swap it in as the representative.
                 kept_file['is_duplicate'] = True
                 kept_file['similarity_to'] = file_info['name']
-                # Re-using the same match score since they are similar
                 kept_file['similarity_score'] = last_score
                 
                 # Replace representative in kept_images
-                kept_images[match_idx] = (file_info, features, focus_score)
+                kept_images[match_idx] = (file_info, features, current_score)
             else:
-                # Kept one is sharper (or focus is disabled). Mark this one as duplicate.
+                # Kept one is better. Mark this one as duplicate.
                 file_info['is_duplicate'] = True
                 file_info['similarity_to'] = kept_file['name']
                 file_info['similarity_score'] = last_score
@@ -364,15 +419,19 @@ def generate_html_report(groups, output_path, target_dir, show_hash=False):
         "        .card { position: relative; border-radius: 0.75rem; overflow: hidden; background: var(--card-bg); border: 1px solid var(--border); transition: transform 0.2s, box-shadow 0.2s; }",
         "        .card:hover { transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4); }",
         "        .card.keep { border-color: var(--success); box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }",
+        "        .card.closed-eyes { border-color: #ef4444; }",
         "        .img-container { aspect-ratio: 4/3; background: #000; overflow: hidden; display: flex; align-items: center; justify-content: center; }",
         "        img { width: 100%; height: 100%; object-fit: cover; }",
         "        .badge { position: absolute; top: 0.75rem; left: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 2rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }",
         "        .badge-keep { background: var(--success); color: #fff; }",
         "        .badge-dup { background: rgba(0, 0, 0, 0.6); color: var(--text-muted); backdrop-filter: blur(4px); }",
+        "        .badge-eyes { top: 0.75rem; left: auto; right: 0.75rem; background: #ef4444; color: #fff; }",
         "        .card-info { padding: 1rem; }",
         "        .filename { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.25rem; }",
-        "        .meta { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); }",
+        "        .meta { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; color: var(--text-muted); }",
+        "        .meta-row { display: flex; justify-content: space-between; }",
         "        .highlight { color: var(--accent); font-weight: 600; }",
+        "        .warning { color: #ef4444; font-weight: 600; }",
         "        @media (max-width: 640px) { body { padding: 1rem; } .row { grid-template-columns: 1fr; } }",
         "    </style>",
         "</head>",
@@ -399,6 +458,22 @@ def generate_html_report(groups, output_path, target_dir, show_hash=False):
             focus_score = f.get('focus_score', 0)
             focus_str = f"{focus_score:.1f}" if focus_score else "N/A"
             
+            eyes_status = f.get('eyes_status')
+            closed_eyes_class = ""
+            eyes_badge = ""
+            eyes_info = ""
+            
+            if eyes_status:
+                faces, eyes, all_open = eyes_status
+                if faces > 0:
+                    eyes_info = f"{eyes} eyes / {faces} faces"
+                    if not all_open:
+                        closed_eyes_class = "closed-eyes"
+                        eyes_badge = f"<span class='badge badge-eyes'>CLOSED EYES</span>"
+                        eyes_info = f"<span class='warning'>{eyes_info}</span>"
+                else:
+                    eyes_info = "No faces"
+
             # Use absolute path for local viewing
             original_path = f['path']
             img_src = f"file://{original_path}"
@@ -415,17 +490,22 @@ def generate_html_report(groups, output_path, target_dir, show_hash=False):
                     # No JPG fallback? The browser likely won't display the HEIC
                     pass
             
-            html.append(f"                    <div class='card {keep_class}'>")
+            html.append(f"                    <div class='card {keep_class} {closed_eyes_class}'>")
             html.append(f"                        <span class='badge {badge_class}'>{badge}</span>")
+            html.append(f"                        {eyes_badge}")
             html.append(f"                        <div class='img-container'><img src='{img_src}' alt='{f['name']}' loading='lazy'></div>")
             html.append(f"                        <div class='card-info'>")
             html.append(f"                            <div class='filename' title='{f['name']}'>{f['name']}</div>")
             html.append(f"                            <div class='meta'>")
-            html.append(f"                                <span>Focus: <span class='highlight'>{focus_str}</span></span>")
+            html.append(f"                                <div class='meta-row'>")
+            html.append(f"                                    <span>Focus: <span class='highlight'>{focus_str}</span></span>")
             if show_hash and f.get('phash'):
-                html.append(f"                                <span>Hash: <span class='highlight'>{f['phash']}</span></span>")
+                html.append(f"                                    <span>Hash: <span class='highlight'>{f['phash']}</span></span>")
+            html.append(f"                                </div>")
+            if eyes_info:
+                html.append(f"                                <div class='meta-row'><span>Eyes: {eyes_info}</span></div>")
             if is_dup:
-                html.append(f"                                <span>Match: {f.get('similarity_to', 'N/A')}</span>")
+                html.append(f"                                <div class='meta-row'><span>Match: {f.get('similarity_to', 'N/A')}</span></div>")
             html.append(f"                            </div>")
             html.append(f"                        </div>")
             html.append(f"                    </div>")
@@ -462,6 +542,7 @@ if __name__ == "__main__":
     parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
     parser.add_argument("--clean", action="store_true", help="Remove the 'jpg' directory after processing (use only with --convert-heic)")
     parser.add_argument("--no-focus", action="store_false", dest="focus", default=True, help="Disable focus-based selection (keep the first similar image instead)")
+    parser.add_argument("--eyes", action="store_true", help="Enable eye detection to favor images with open eyes")
     parser.add_argument("--html", help="Generate an HTML gallery report to the specified file")
     parser.add_argument("--show-hash", action="store_true", help="Show perceptual hash in the HTML report")
     args = parser.parse_args()
@@ -526,7 +607,7 @@ if __name__ == "__main__":
     if HAS_OPENCV:
         # Default thresholds
         threshold = args.threshold if args.threshold is not None else 10
-        groups = [filter_similar_images(g, method=args.method, threshold=threshold, use_focus=args.focus) for g in groups]
+        groups = [filter_similar_images(g, method=args.method, threshold=threshold, use_focus=args.focus, use_eyes=args.eyes) for g in groups]
     elif not args.quiet:
          print("Warning: OpenCV not found. Visual similarity check skipped.", file=sys.stderr)
     
@@ -556,8 +637,14 @@ if __name__ == "__main__":
                 if f.get('is_duplicate'):
                     method_label = "dist" if args.method == 'phash' else "matches"
                     print(f"  [DUP]  {f['name']:30} (matched {f['similarity_to']} with {f['similarity_score']} {method_label}){focus_info}", file=sys.stderr)
+                    if f.get('eyes_status'):
+                        faces, eyes, all_open = f['eyes_status']
+                        print(f"         Eyes: {eyes}/{faces} faces (all open: {all_open})", file=sys.stderr)
                 else:
                     print(f"  [KEEP] {f['name']:30}{focus_info}", file=sys.stderr)
+                    if f.get('eyes_status'):
+                        faces, eyes, all_open = f['eyes_status']
+                        print(f"         Eyes: {eyes}/{faces} faces (all open: {all_open})", file=sys.stderr)
         
         print("\n" + "="*50, file=sys.stderr)
         print(f"FINISH: Unique files: {unique_count}", file=sys.stderr)

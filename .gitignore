@@ -4,6 +4,8 @@ venv/
 # Output directories
 unique/
 jpg/
+gallery.html
+report.html
 
 # Python cache
 __pycache__/

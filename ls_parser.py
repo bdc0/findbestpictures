@@ -317,6 +317,126 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
     
     return group
 
+def generate_html_report(groups, output_path, target_dir):
+    """Generates a premium HTML gallery report of the image groups."""
+    doc_title = f"Image Selection Report - {os.path.basename(target_dir)}"
+    
+    html = [
+        "<!DOCTYPE html>",
+        "<html lang='en'>",
+        "<head>",
+        "    <meta charset='UTF-8'>",
+        "    <meta name='viewport' content='width=device-width, initial-scale=1.0'>",
+        f"    <title>{doc_title}</title>",
+        "    <style>",
+        "        :root {",
+        "            --bg: #0f172a;",
+        "            --card-bg: #1e293b;",
+        "            --text: #f8fafc;",
+        "            --text-muted: #94a3b8;",
+        "            --accent: #38bdf8;",
+        "            --success: #22c55e;",
+        "            --border: #334155;",
+        "        }",
+        "        body {",
+        "            background: var(--bg);",
+        "            color: var(--text);",
+        "            font-family: 'Inter', system-ui, -apple-system, sans-serif;",
+        "            margin: 0;",
+        "            padding: 2rem;",
+        "            line-height: 1.5;",
+        "        }",
+        "        .container { max-width: 1400px; margin: 0 auto; }",
+        "        header { margin-bottom: 3rem; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; }",
+        "        h1 { font-size: 1.875rem; font-weight: 700; margin: 0; color: var(--accent); }",
+        "        .stats { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.5rem; }",
+        "        .group { border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; margin-bottom: 3rem; background: rgba(30, 41, 59, 0.5); }",
+        "        .group-header { margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; }",
+        "        .group-title { font-size: 1.125rem; font-weight: 600; color: var(--text-muted); }",
+        "        .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem; }",
+        "        .card { position: relative; border-radius: 0.75rem; overflow: hidden; background: var(--card-bg); border: 1px solid var(--border); transition: transform 0.2s, box-shadow 0.2s; }",
+        "        .card:hover { transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4); }",
+        "        .card.keep { border-color: var(--success); box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }",
+        "        .img-container { aspect-ratio: 4/3; background: #000; overflow: hidden; display: flex; align-items: center; justify-content: center; }",
+        "        img { width: 100%; height: 100%; object-fit: cover; }",
+        "        .badge { position: absolute; top: 0.75rem; left: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 2rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }",
+        "        .badge-keep { background: var(--success); color: #fff; }",
+        "        .badge-dup { background: rgba(0, 0, 0, 0.6); color: var(--text-muted); backdrop-filter: blur(4px); }",
+        "        .card-info { padding: 1rem; }",
+        "        .filename { font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 0.25rem; }",
+        "        .meta { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); }",
+        "        .highlight { color: var(--accent); font-weight: 600; }",
+        "        @media (max-width: 640px) { body { padding: 1rem; } .row { grid-template-columns: 1fr; } }",
+        "    </style>",
+        "</head>",
+        "<body>",
+        "    <div class='container'>",
+        "        <header>",
+        f"            <h1>{doc_title}</h1>",
+        f"            <div class='stats'>Found {len(groups)} groups with {sum(len(g) for g in groups)} total files</div>",
+        "        </header>",
+        "        <main>"
+    ]
+    
+    for i, group in enumerate(groups, 1):
+        html.append(f"            <section class='group'>")
+        html.append(f"                <div class='group-header'><span class='group-title'>Set {i}</span></div>")
+        html.append(f"                <div class='row'>")
+        
+        for f in group:
+            is_dup = f.get('is_duplicate', False)
+            keep_class = "keep" if not is_dup else ""
+            badge = "KEEP" if not is_dup else "DUP"
+            badge_class = "badge-keep" if not is_dup else "badge-dup"
+            
+            focus_score = f.get('focus_score', 0)
+            focus_str = f"{focus_score:.1f}" if focus_score else "N/A"
+            
+            # Use absolute path for local viewing
+            original_path = f['path']
+            img_src = f"file://{original_path}"
+            
+            # Browser HEIC Fallback: Check for converted JPG
+            ext = os.path.splitext(f['name'])[1].lower()
+            if ext in ('.heic', '.heif'):
+                parent_dir = os.path.dirname(original_path)
+                basename = os.path.splitext(f['name'])[0]
+                jpg_path = os.path.join(parent_dir, "jpg", basename + ".jpg")
+                if os.path.exists(jpg_path):
+                    img_src = f"file://{jpg_path}"
+                else:
+                    # No JPG fallback? The browser likely won't display the HEIC
+                    pass
+            
+            html.append(f"                    <div class='card {keep_class}'>")
+            html.append(f"                        <span class='badge {badge_class}'>{badge}</span>")
+            html.append(f"                        <div class='img-container'><img src='{img_src}' alt='{f['name']}' loading='lazy'></div>")
+            html.append(f"                        <div class='card-info'>")
+            html.append(f"                            <div class='filename' title='{f['name']}'>{f['name']}</div>")
+            html.append(f"                            <div class='meta'>")
+            html.append(f"                                <span>Focus: <span class='highlight'>{focus_str}</span></span>")
+            if is_dup:
+                html.append(f"                                <span>Match: {f.get('similarity_to', 'N/A')}</span>")
+            html.append(f"                            </div>")
+            html.append(f"                        </div>")
+            html.append(f"                    </div>")
+            
+        html.append(f"                </div>")
+        html.append(f"            </section>")
+        
+    html.append("        </main>")
+    html.append("    </div>")
+    html.append("</body>")
+    html.append("</html>")
+    
+    try:
+        with open(output_path, 'w') as f:
+            f.write("\n".join(html))
+        return True
+    except Exception as e:
+        print(f"Error writing HTML report: {e}", file=sys.stderr)
+        return False
+
 import shutil
 
 if __name__ == "__main__":
@@ -333,6 +453,7 @@ if __name__ == "__main__":
     parser.add_argument("--convert-heic", action="store_true", help="Convert HEIC images to JPG (in a 'jpg' subdir) before processing")
     parser.add_argument("--clean", action="store_true", help="Remove the 'jpg' directory after processing (use only with --convert-heic)")
     parser.add_argument("--no-focus", action="store_false", dest="focus", default=True, help="Disable focus-based selection (keep the first similar image instead)")
+    parser.add_argument("--html", help="Generate an HTML gallery report to the specified file")
     args = parser.parse_args()
 
     # Validation
@@ -401,6 +522,12 @@ if __name__ == "__main__":
     
     # Filter out empty groups 
     groups = [g for g in groups if g]
+
+    # Generate HTML report if requested
+    if args.html:
+        if args.verbose:
+            print(f"Generating HTML report: {args.html}...", file=sys.stderr)
+        generate_html_report(groups, args.html, target_dir)
 
     # Calculate final unique count
     unique_count = sum(1 for group in groups for f in group if not f.get('is_duplicate'))

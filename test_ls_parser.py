@@ -490,6 +490,55 @@ class TestFocusSelection:
         assert sharp['is_duplicate'] is True
         assert sharp['similarity_to'] == "blurry.png"
 
+    def test_html_report_generation(self, tmp_path):
+        """Verify HTML report contains expected design elements and data."""
+        report_path = tmp_path / "report.html"
+        groups = [[
+            {'name': 'img1.jpg', 'path': '/tmp/img1.jpg', 'focus_score': 150.0},
+            {'name': 'img2.jpg', 'path': '/tmp/img2.jpg', 'focus_score': 100.0, 'is_duplicate': True, 'similarity_to': 'img1.jpg'}
+        ]]
+        
+        ls_parser.generate_html_report(groups, str(report_path), "/tmp")
+        
+        assert report_path.exists()
+        content = report_path.read_text()
+        assert "<!DOCTYPE html>" in content
+        assert "--bg: #0f172a;" in content # Theme check
+        assert "IMG1.JPG" in content.upper()
+        assert "KEEP" in content
+        assert "DUP" in content
+        assert "Focus: <span class='highlight'>150.0</span>" in content
+
+    def test_html_report_heic_fallback(self, tmp_path):
+        """Verify HTML report uses JPG fallback for HEIC if available."""
+        # Setup: Create a HEIC and a JPG in subdirectory
+        heic_path = tmp_path / "test.heic"
+        heic_path.write_text("dummy")
+        
+        jpg_dir = tmp_path / "jpg"
+        jpg_dir.mkdir()
+        jpg_path = jpg_dir / "test.jpg"
+        jpg_path.write_text("dummy jpg")
+        
+        groups = [[{
+            'name': 'test.heic', 
+            'path': str(heic_path),
+            'focus_score': 10.0
+        }]]
+        
+        report_path = tmp_path / "report_heic.html"
+        ls_parser.generate_html_report(groups, str(report_path), str(tmp_path))
+        
+        assert report_path.exists()
+        content = report_path.read_text()
+        
+        # Should reference the JPG path, not the HEIC path
+        assert f"src='file://{jpg_path}'" in content
+        assert f"src='file://{heic_path}'" not in content
+        # But filename label should still be the HEIC
+        assert "test.heic" in content
+
+
 
 # ============================================================================
 # Tests: filter_similar_images (requires OpenCV)

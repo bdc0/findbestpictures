@@ -538,6 +538,26 @@ class TestFocusSelection:
         # But filename label should still be the HEIC
         assert "test.heic" in content
 
+    def test_html_report_show_hash(self, tmp_path):
+        """Verify HTML report displays pHash when show_hash=True."""
+        report_path = tmp_path / "report_hash.html"
+        groups = [[{
+            'name': 'img1.jpg',
+            'path': '/tmp/img1.jpg',
+            'focus_score': 100.0,
+            'phash': '0x12345678abcdef'
+        }]]
+        
+        # Test with hash enabled
+        ls_parser.generate_html_report(groups, str(report_path), "/tmp", show_hash=True)
+        content = report_path.read_text()
+        assert "Hash: <span class='highlight'>0x12345678abcdef</span>" in content
+        
+        # Test with hash disabled (default)
+        ls_parser.generate_html_report(groups, str(report_path), "/tmp", show_hash=False)
+        content = report_path.read_text()
+        assert "Hash:" not in content
+
 
 
 # ============================================================================

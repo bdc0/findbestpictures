@@ -271,8 +271,15 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
         # Extract features based on method
         if method == 'orb':
             features = get_orb_descriptor(path)
+            # For ORB, we store a truncated representation or match count if we wanted,
+            # but for "hash" display, let's store a hex string if it's phash or "ORB" if it's orb
+            file_info['phash'] = "ORB" if features is not None else None
         else: # phash
             features = get_phash(path)
+            if features is not None:
+                file_info['phash'] = hex(features)
+            else:
+                file_info['phash'] = None
             
         match_idx = -1
         last_score = None
@@ -317,7 +324,7 @@ def filter_similar_images(group, method='orb', threshold=None, use_focus=True):
     
     return group
 
-def generate_html_report(groups, output_path, target_dir):
+def generate_html_report(groups, output_path, target_dir, show_hash=False):
     """Generates a premium HTML gallery report of the image groups."""
     doc_title = f"Image Selection Report - {os.path.basename(target_dir)}"
     
@@ -415,6 +422,8 @@ def generate_html_report(groups, output_path, target_dir):
             html.append(f"                            <div class='filename' title='{f['name']}'>{f['name']}</div>")
             html.append(f"                            <div class='meta'>")
             html.append(f"                                <span>Focus: <span class='highlight'>{focus_str}</span></span>")
+            if show_hash and f.get('phash'):
+                html.append(f"                                <span>Hash: <span class='highlight'>{f['phash']}</span></span>")
             if is_dup:
                 html.append(f"                                <span>Match: {f.get('similarity_to', 'N/A')}</span>")
             html.append(f"                            </div>")
@@ -454,6 +463,7 @@ if __name__ == "__main__":
     parser.add_argument("--clean", action="store_true", help="Remove the 'jpg' directory after processing (use only with --convert-heic)")
     parser.add_argument("--no-focus", action="store_false", dest="focus", default=True, help="Disable focus-based selection (keep the first similar image instead)")
     parser.add_argument("--html", help="Generate an HTML gallery report to the specified file")
+    parser.add_argument("--show-hash", action="store_true", help="Show perceptual hash in the HTML report")
     args = parser.parse_args()
 
     # Validation
@@ -527,7 +537,7 @@ if __name__ == "__main__":
     if args.html:
         if args.verbose:
             print(f"Generating HTML report: {args.html}...", file=sys.stderr)
-        generate_html_report(groups, args.html, target_dir)
+        generate_html_report(groups, args.html, target_dir, show_hash=args.show_hash)
 
     # Calculate final unique count
     unique_count = sum(1 for group in groups for f in group if not f.get('is_duplicate'))

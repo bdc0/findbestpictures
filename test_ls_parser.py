@@ -327,6 +327,14 @@ class TestHammingDistance:
         assert ls_parser.hamming_distance(None, None) == 999
 
 
+# ============================================================================
+# Tests: HEIC Fallback Logic
+# ============================================================================
+
+class TestHeicFallback:
+    """Tests for automatic JPG fallback when processing HEIC/HEIF files."""
+
+    @pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
     def test_heic_fallback_to_jpg(self, tmp_path):
         """HEIC files fall back to the converted JPG in the jpg/ subdirectory."""
         import cv2
@@ -339,10 +347,11 @@ class TestHammingDistance:
         jpg_dir.mkdir()
         img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
         cv2.imwrite(str(jpg_dir / "photo.jpg"), img)
-        # Should fall back to jpg/photo.jpg
+        # Should fall back to jpg/photo.jpg for descriptor extraction
         des = ls_parser.get_orb_descriptor(str(heic_file))
         assert des is not None
 
+    @pytest.mark.skipif(not ls_parser.HAS_OPENCV, reason="OpenCV not installed")
     def test_heic_no_fallback_warns(self, tmp_path, capsys):
         """HEIC without a converted JPG prints a warning and returns None."""
         heic_file = tmp_path / "photo.HEIC"
@@ -351,6 +360,7 @@ class TestHammingDistance:
         assert des is None
         captured = capsys.readouterr()
         assert "Warning" in captured.err
+
 
 
 # ============================================================================
@@ -890,6 +900,36 @@ class TestCLI:
         assert not (tmp_path / "unique").exists()
         # Verify no nested path like my_photos/my_photos/unique
         assert not (photo_dir / "my_photos").exists()
+
+    def test_html_flag_integration(self, tmp_path):
+        """Verify --html generates a report file via CLI."""
+        report = tmp_path / "report.html"
+        r = self._run(SCRIPT_DIR, "--html", str(report))
+        assert r.returncode == 0
+        assert report.exists()
+        assert "<!DOCTYPE html>" in report.read_text()
+
+    def test_no_focus_flag_integration(self):
+        """Verify --no-focus is parsed and runs without error."""
+        r = self._run(SCRIPT_DIR, "--no-focus", "-v")
+        assert r.returncode == 0
+        # If --no-focus is working, focus scores won't appear in breakdown if we mock it?
+        # Hard to check without mock injection into subprocess, but parsing check is good.
+        assert "SIMILARITY BREAKDOWN" in r.stderr
+
+    def test_show_hash_flag_integration(self, tmp_path):
+        """Verify --show-hash is passed through to the report generator."""
+        report = tmp_path / "report.html"
+        # We'll run it on test_images to ensure there is at least one image to hash
+        imgs_dir = os.path.join(SCRIPT_DIR, "test_images")
+        if not os.path.exists(imgs_dir):
+            pytest.skip("test_images not generated")
+            
+        r = self._run(imgs_dir, "--html", str(report), "--show-hash")
+        assert r.returncode == 0
+        content = report.read_text()
+        assert "Hash:" in content
+
 
 
 
